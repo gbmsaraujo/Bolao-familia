@@ -1238,7 +1238,7 @@ const CSS = `
 /* ---- bonus cards (classificados, total gols) ---- */
 .bonus-card{background:var(--pitch2);border:1px solid var(--line);border-radius:14px;padding:14px 16px;
   display:flex;flex-direction:column;gap:10px}
-.bonus-card.locked{opacity:.85}
+.bonus-card.locked{opacity:.5;pointer-events:none;filter:grayscale(.6)}
 .bonus-head{display:flex;align-items:center;gap:7px;font-weight:700;font-size:13.5px}
 .bonus-head svg{color:var(--canary);flex-shrink:0}
 .bonus-pts{margin-left:auto;font-size:11px;font-weight:700;color:var(--canary);
