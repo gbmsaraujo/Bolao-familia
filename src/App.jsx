@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { Lock, Trophy, Ticket, Settings, Check, Eye, EyeOff, RefreshCw, Crown, Target, Users, Zap } from "lucide-react";
+import { Lock, Trophy, Ticket, Settings, Check, Eye, EyeOff, RefreshCw, Crown, Target, Users, Zap, UserCheck, Clock } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
 /* ------------------------------------------------------------------ *
@@ -67,6 +67,10 @@ const store = {
       .upsert({ key, value, updated_at: new Date().toISOString() });
     if (error) { console.error("set", error); return null; }
     return { key, value };
+  },
+  async del(key) {
+    const { error } = await supabase.from("kv").delete().eq("key", key);
+    if (error) console.error("del", error);
   },
 };
 
@@ -157,6 +161,7 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
   const [orgUnlocked, setOrgUnlocked] = useState(false);
+  const [approvalStatus, setApprovalStatus] = useState(null); // null | "pending" | "approved" | "rejected"
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -202,17 +207,54 @@ export default function App() {
     setMe({ id, name: mine?.name || name });
   }, []);
 
+  const resolveApproval = useCallback(async (id, name, ps) => {
+    if (ps.some((p) => p.id === id)) {
+      // already in the DB → skip approval
+      loginAs(id, name, ps);
+      setApprovalStatus("approved");
+      return;
+    }
+    const r = await store.get(`approval:${id}`);
+    if (r?.value) {
+      const data = JSON.parse(r.value);
+      setMe({ id, name: data.name || name });
+      if (data.status === "approved") {
+        loginAs(id, data.name || name, ps);
+        setApprovalStatus("approved");
+      } else {
+        setApprovalStatus(data.status); // "pending" or "rejected"
+      }
+    }
+  }, [loginAs]);
+
   useEffect(() => {
     loadAll().then(({ ps }) => {
       try {
         const saved = localStorage.getItem("bolao_me");
-        if (saved) {
-          const { id, name } = JSON.parse(saved);
-          if (id && name) loginAs(id, name, ps);
-        }
+        if (!saved) return;
+        const { id, name } = JSON.parse(saved);
+        if (id && name) resolveApproval(id, name, ps);
       } catch {}
     });
-  }, [loadAll, loginAs]);
+  }, [loadAll, resolveApproval]);
+
+  // Poll for approval when pending
+  useEffect(() => {
+    if (approvalStatus !== "pending" || !me) return;
+    const interval = setInterval(async () => {
+      const r = await store.get(`approval:${me.id}`);
+      if (r?.value) {
+        const data = JSON.parse(r.value);
+        if (data.status === "approved") {
+          clearInterval(interval);
+          const { ps } = await loadAll();
+          loginAs(me.id, me.name, ps);
+          setApprovalStatus("approved");
+        }
+      }
+    }, 8000);
+    return () => clearInterval(interval);
+  }, [approvalStatus, me, loadAll, loginAs]);
 
   const flash = (m) => {
     setToast(m);
@@ -224,14 +266,61 @@ export default function App() {
     if (name.length < 2) return;
     const id = slug(name);
     const { ps } = await loadAll();
-    loginAs(id, name, ps);
+
+    // Existing player → direct access
+    if (ps.some((p) => p.id === id)) {
+      loginAs(id, name, ps);
+      setApprovalStatus("approved");
+      localStorage.setItem("bolao_me", JSON.stringify({ id, name }));
+      return;
+    }
+
+    // Check existing approval record
+    const existing = await store.get(`approval:${id}`);
+    if (existing?.value) {
+      const data = JSON.parse(existing.value);
+      setMe({ id, name: data.name || name });
+      localStorage.setItem("bolao_me", JSON.stringify({ id, name: data.name || name }));
+      if (data.status === "approved") {
+        loginAs(id, data.name || name, ps);
+        setApprovalStatus("approved");
+      } else {
+        setApprovalStatus(data.status);
+      }
+      return;
+    }
+
+    // New user → create approval request
+    await store.set(`approval:${id}`, JSON.stringify({ id, name, status: "pending", requestedAt: Date.now() }));
+    setMe({ id, name });
+    setApprovalStatus("pending");
     localStorage.setItem("bolao_me", JSON.stringify({ id, name }));
   };
 
   const logout = () => {
     localStorage.removeItem("bolao_me");
     setMe(null);
+    setApprovalStatus(null);
     setNameInput("");
+  };
+
+  const approveUser = async (id) => {
+    const r = await store.get(`approval:${id}`);
+    if (!r?.value) return;
+    const data = JSON.parse(r.value);
+    await store.set(`approval:${id}`, JSON.stringify({ ...data, status: "approved", approvedAt: Date.now() }));
+  };
+
+  const rejectUser = async (id) => {
+    const r = await store.get(`approval:${id}`);
+    if (!r?.value) return;
+    const data = JSON.parse(r.value);
+    await store.set(`approval:${id}`, JSON.stringify({ ...data, status: "rejected" }));
+  };
+
+  const deleteUser = async (id) => {
+    await Promise.all([store.del(`pred:${id}`), store.del(`approval:${id}`)]);
+    await loadAll();
   };
 
   const setMyScore = (gid, side, val) => {
@@ -386,7 +475,11 @@ export default function App() {
           count={players.length}
           loading={loading}
         />
-      ) : (
+      ) : approvalStatus === "pending" ? (
+        <WaitingApproval name={me.name} onLogout={logout} />
+      ) : approvalStatus === "rejected" ? (
+        <RejectedScreen name={me.name} onLogout={logout} />
+      ) : approvalStatus === "approved" ? (
         <div className="shell">
           <Header me={me} count={players.length} onRefresh={loadAll} onLogout={logout} />
 
@@ -402,6 +495,9 @@ export default function App() {
             </button>
             <button className={tab === "org" ? "tab on" : "tab"} onClick={() => setTab("org")}>
               <Settings size={16} /> Placares
+            </button>
+            <button className={tab === "aprovacoes" ? "tab on" : "tab"} onClick={() => setTab("aprovacoes")}>
+              <UserCheck size={16} />
             </button>
           </nav>
 
@@ -439,7 +535,22 @@ export default function App() {
               setUnlocked={setOrgUnlocked}
             />
           )}
+
+          {tab === "aprovacoes" && (
+            <Aprovacoes
+              unlocked={orgUnlocked}
+              setUnlocked={setOrgUnlocked}
+              onApprove={approveUser}
+              onReject={rejectUser}
+              onDelete={deleteUser}
+            />
+          )}
         </div>
+      ) : (
+        <div className="gate"><div className="gate-card" style={{textAlign:"center",padding:"40px 24px"}}>
+          <div className="eyebrow">Bolão da Família</div>
+          <p style={{color:"var(--muted)",marginTop:"16px"}}>Carregando…</p>
+        </div></div>
       )}
 
       {toast && <div className="toast">{toast}</div>}
@@ -524,6 +635,25 @@ function Palpites({ myScores, setMyScore, myClassified, toggleClassified, myBraz
     <div className="pane">
       <div className="legend">
         <EyeOff size={14} /> Só você vê seus palpites. Eles travam no horário do jogo.
+      </div>
+
+      {/* === Participantes === */}
+      <div className="participants-card">
+        <div className="participants-head">
+          <Users size={14} />
+          <span>{players.length} {players.length === 1 ? "participante" : "participantes"} no bolão</span>
+        </div>
+        <div className="participants-list">
+          {players.length === 0 ? (
+            <span className="participants-empty">Ninguém salvou palpites ainda</span>
+          ) : (
+            players.map((p) => (
+              <span key={p.id} className={"participant-chip" + (p.id === me.id ? " mine" : "")}>
+                {p.name}{p.id === me.id ? " 👤" : ""}
+              </span>
+            ))
+          )}
+        </div>
       </div>
 
       {/* === 2 Classificados === */}
@@ -1155,6 +1285,209 @@ function Organizador({ results, onSave, onSaveClassified, onSaveBrazilGoals, onS
   );
 }
 
+/* ------------------------- WaitingApproval ------------------------- */
+function WaitingApproval({ name, onLogout }) {
+  return (
+    <div className="gate">
+      <div className="gate-card" style={{ textAlign: "center" }}>
+        <div className="eyebrow">Copa 2026 · Grupo C</div>
+        <h1 className="gate-title" style={{ fontSize: "38px", marginBottom: "20px" }}>
+          BOLÃO DA<br />FAMÍLIA
+        </h1>
+        <div className="waiting-icon"><Clock size={40} /></div>
+        <h2 className="waiting-title">Aguardando Aprovação</h2>
+        <p className="waiting-sub">
+          Olá, <b>{name}</b>! Seu pedido de entrada foi enviado.<br />
+          O administrador vai te aprovar em breve. A página verifica automaticamente a cada poucos segundos.
+        </p>
+        <div className="waiting-pulse">
+          <span /><span /><span />
+        </div>
+        <button className="waiting-back" onClick={onLogout}>
+          Voltar / Trocar nome
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------- RejectedScreen -------------------------- */
+function RejectedScreen({ name, onLogout }) {
+  return (
+    <div className="gate">
+      <div className="gate-card" style={{ textAlign: "center" }}>
+        <div className="eyebrow">Copa 2026 · Grupo C</div>
+        <h1 className="gate-title" style={{ fontSize: "38px", marginBottom: "20px" }}>
+          BOLÃO DA<br />FAMÍLIA
+        </h1>
+        <p className="waiting-sub" style={{ color: "#ff7a63" }}>
+          O pedido de <b>{name}</b> não foi aprovado.<br />
+          Fala com o organizador se achar que houve engano.
+        </p>
+        <button className="waiting-back" onClick={onLogout}>
+          Tentar com outro nome
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------- Aprovações ---------------------------- */
+function Aprovacoes({ unlocked, setUnlocked, onApprove, onReject, onDelete }) {
+  const [approvals, setApprovals] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [code, setCode] = useState("");
+  const [err, setErr] = useState(false);
+
+  const loadApprovals = useCallback(async () => {
+    setLoading(true);
+    const { keys } = await store.list("approval:");
+    const list = [];
+    for (const k of keys) {
+      const r = await store.get(k);
+      if (r?.value) {
+        try { list.push(JSON.parse(r.value)); } catch {}
+      }
+    }
+    list.sort((a, b) => (a.requestedAt || 0) - (b.requestedAt || 0));
+    setApprovals(list);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (unlocked) loadApprovals();
+  }, [unlocked, loadApprovals]);
+
+  const handle = async (fn, id) => {
+    await fn(id);
+    await loadApprovals();
+  };
+
+  const tryUnlock = () => {
+    if (code.trim().toLowerCase() === ORG_CODE) { setErr(false); setUnlocked(true); }
+    else setErr(true);
+  };
+
+  if (!unlocked) {
+    return (
+      <div className="pane">
+        <div className="org-gate">
+          <Lock size={26} />
+          <h2 className="pane-title">Aprovações</h2>
+          <p className="org-sub">Digite o código de administrador para gerenciar os pedidos de entrada.</p>
+          <div className="code-input">
+            <input
+              type="password"
+              value={code}
+              onChange={(e) => { setCode(e.target.value); setErr(false); }}
+              onKeyDown={(e) => e.key === "Enter" && tryUnlock()}
+              placeholder="Código de organizador"
+              autoComplete="off"
+            />
+            <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={tryUnlock} disabled={!code.trim()}>
+              Entrar
+            </button>
+          </div>
+          {err && <div className="code-err">Código incorreto.</div>}
+        </div>
+      </div>
+    );
+  }
+
+  const pending = approvals.filter((a) => a.status === "pending");
+  const approved = approvals.filter((a) => a.status === "approved");
+  const rejected = approvals.filter((a) => a.status === "rejected");
+
+  return (
+    <div className="pane">
+      <h2 className="pane-title">
+        <UserCheck size={18} /> Aprovações
+      </h2>
+
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <button className="mini-btn ghost" onClick={loadApprovals} disabled={loading}>
+          <RefreshCw size={13} /> {loading ? "Carregando…" : "Atualizar"}
+        </button>
+      </div>
+
+      {/* Pendentes */}
+      <div className="aprov-section">
+        <div className="aprov-section-title">
+          <Clock size={14} /> Aguardando ({pending.length})
+        </div>
+        {pending.length === 0 ? (
+          <div className="aprov-empty">Nenhum pedido pendente</div>
+        ) : (
+          pending.map((a) => (
+            <div className="aprov-row" key={a.id}>
+              <div className="aprov-name">
+                {a.name}
+                <span className="aprov-time">
+                  {a.requestedAt ? new Date(a.requestedAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}
+                </span>
+              </div>
+              <div className="aprov-actions">
+                <button className="mini-btn" onClick={() => handle(onApprove, a.id)}>
+                  <Check size={13} /> Aprovar
+                </button>
+                <button className="mini-btn ghost" onClick={() => handle(onReject, a.id)}>
+                  Rejeitar
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* Aprovados */}
+      {approved.length > 0 && (
+        <div className="aprov-section">
+          <div className="aprov-section-title" style={{ color: "var(--grass2)" }}>
+            <Check size={14} /> Aprovados ({approved.length})
+          </div>
+          {approved.map((a) => (
+            <div className="aprov-row" key={a.id}>
+              <span className="aprov-name">{a.name}</span>
+              <div className="aprov-actions">
+                <button className="mini-btn ghost" style={{ fontSize: "11px", padding: "6px 10px" }} onClick={() => handle(onReject, a.id)}>
+                  Revogar
+                </button>
+                <button className="mini-btn delete-btn" style={{ fontSize: "11px", padding: "6px 10px" }}
+                  onClick={() => { if (confirm(`Excluir "${a.name}" e todos os palpites? Não dá pra desfazer.`)) handle(onDelete, a.id); }}>
+                  Excluir
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Rejeitados */}
+      {rejected.length > 0 && (
+        <div className="aprov-section">
+          <div className="aprov-section-title" style={{ color: "var(--muted)" }}>
+            Rejeitados ({rejected.length})
+          </div>
+          {rejected.map((a) => (
+            <div className="aprov-row" key={a.id}>
+              <span className="aprov-name" style={{ color: "var(--muted)" }}>{a.name}</span>
+              <div className="aprov-actions">
+                <button className="mini-btn ghost" style={{ fontSize: "11px", padding: "6px 10px" }} onClick={() => handle(onApprove, a.id)}>
+                  Aprovar
+                </button>
+                <button className="mini-btn delete-btn" style={{ fontSize: "11px", padding: "6px 10px" }}
+                  onClick={() => { if (confirm(`Excluir "${a.name}"?`)) handle(onDelete, a.id); }}>
+                  Excluir
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* =============================== CSS =============================== */
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700;800&display=swap');
@@ -1234,6 +1567,17 @@ const CSS = `
 .legend{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);
   background:var(--pitch2);border:1px solid var(--line);padding:10px 12px;border-radius:11px}
 .legend svg{color:var(--canary)}
+
+/* ---- participants ---- */
+.participants-card{background:var(--pitch2);border:1px solid var(--line);border-radius:12px;
+  padding:11px 14px;display:flex;flex-direction:column;gap:9px}
+.participants-head{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:700;color:var(--muted)}
+.participants-head svg{color:var(--canary)}
+.participants-list{display:flex;flex-wrap:wrap;gap:6px}
+.participants-empty{font-size:12px;color:var(--muted)}
+.participant-chip{font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px;
+  background:rgba(255,255,255,.05);border:1px solid var(--line2);color:var(--text)}
+.participant-chip.mine{background:rgba(255,210,0,.1);border-color:rgba(255,210,0,.3);color:var(--canary)}
 
 /* ---- bonus cards (classificados, total gols) ---- */
 .bonus-card{background:var(--pitch2);border:1px solid var(--line);border-radius:14px;padding:14px 16px;
@@ -1414,6 +1758,7 @@ const CSS = `
   font-weight:800;font-size:13px;padding:9px 16px;border-radius:10px;cursor:pointer}
 .mini-btn:disabled{opacity:.4;cursor:not-allowed}
 .mini-btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line2)}
+.mini-btn.delete-btn{background:rgba(192,52,29,.15);color:#ff7a63;border:1px solid rgba(192,52,29,.3)}
 
 .org-scorer-section{display:flex;flex-direction:column;gap:7px;
   padding-top:10px;border-top:1px solid var(--line)}
@@ -1421,6 +1766,36 @@ const CSS = `
 .org-scorer-label svg{color:var(--canary)}
 .org-scorer-row{display:flex;gap:8px;align-items:center}
 .org-saved-info{font-size:12px;color:var(--grass);font-weight:600}
+
+/* ---- waiting approval ---- */
+.waiting-icon{color:var(--canary);margin:8px auto 0;display:flex;justify-content:center}
+.waiting-title{font-family:'Anton',sans-serif;font-weight:400;font-size:26px;
+  letter-spacing:.02em;margin:12px 0 8px;color:var(--text)}
+.waiting-sub{color:var(--muted);font-size:14px;line-height:1.6;margin:0 0 20px}
+.waiting-sub b{color:var(--text)}
+.waiting-pulse{display:flex;justify-content:center;gap:7px;margin:4px 0 20px}
+.waiting-pulse span{width:8px;height:8px;border-radius:50%;background:var(--canary);
+  animation:pulse 1.4s ease-in-out infinite}
+.waiting-pulse span:nth-child(2){animation-delay:.2s}
+.waiting-pulse span:nth-child(3){animation-delay:.4s}
+@keyframes pulse{0%,80%,100%{opacity:.2;transform:scale(.8)}40%{opacity:1;transform:scale(1)}}
+.waiting-back{background:transparent;border:1px solid var(--line2);color:var(--muted);
+  font-size:13px;font-weight:600;padding:10px 18px;border-radius:10px;cursor:pointer;width:100%}
+.waiting-back:hover{border-color:var(--canary);color:var(--text)}
+
+/* ---- aprovações ---- */
+.aprov-section{background:var(--pitch2);border:1px solid var(--line);border-radius:14px;
+  padding:12px 14px;display:flex;flex-direction:column;gap:2px}
+.aprov-section-title{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.08em;color:var(--canary);
+  padding-bottom:10px;margin-bottom:4px;border-bottom:1px solid var(--line)}
+.aprov-empty{font-size:13px;color:var(--muted);padding:6px 0}
+.aprov-row{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:9px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.aprov-row:last-child{border-bottom:none}
+.aprov-name{font-size:14px;font-weight:600;display:flex;flex-direction:column;gap:2px}
+.aprov-time{font-size:11px;color:var(--muted);font-weight:400}
+.aprov-actions{display:flex;gap:7px;flex-shrink:0}
 
 /* ---- toast ---- */
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
