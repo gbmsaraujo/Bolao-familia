@@ -21,6 +21,9 @@ create policy "kv_public_insert" on public.kv
 create policy "kv_public_update" on public.kv
   for update using (true) with check (true);
 
+create policy "kv_public_delete" on public.kv
+  for delete using (true);
+
 -- Índice para buscas por prefixo (store.list)
 create index if not exists kv_key_prefix_idx on public.kv (key text_pattern_ops);
 
@@ -36,12 +39,12 @@ create index if not exists kv_key_prefix_idx on public.kv (key text_pattern_ops)
 --     "g2": { "h": 3, "a": 1 },
 --     "g3": { "h": 0, "a": 1 }
 --   },
---   "classified": ["BRA", "MAR", "ESC"],   -- 3 times que vão avançar
+--   "classified": ["BRA", "MAR"],           -- 2 times que vão avançar
 --   "brazilGoals": 7,                       -- total de gols do Brasil
 --   "scorers": {
---     "g1": "Vinícius Jr.",
---     "g2": "Rodrygo",
---     "g3": "Endrick"
+--     "g1": ["Vinícius Jr.", "Rodrygo"],    -- array de até 3 goleadores por jogo
+--     "g2": ["Endrick"],
+--     "g3": []
 --   },
 --   "updatedAt": 1718308800000
 -- }
@@ -51,7 +54,7 @@ create index if not exists kv_key_prefix_idx on public.kv (key text_pattern_ops)
 --   "g1": { "h": 2, "a": 0 },
 --   "g2": { "h": 3, "a": 1 },
 --   "g3": { "h": 0, "a": 1 },
---   "classified": ["BRA", "MAR", "ESC"],   -- 3 classificados oficiais
+--   "classified": ["BRA", "MAR"],           -- 2 classificados oficiais
 --   "brazilGoals": 5,                       -- total de gols oficial
 --   "scorers": {
 --     "g1": ["Vinícius Jr.", "Rodrygo"],    -- lista de goleadores por jogo

@@ -1,6 +1,11 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { Lock, Trophy, Ticket, Settings, Check, Eye, EyeOff, RefreshCw, Crown, Target, Users, Zap, UserCheck, Clock } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
+import {
+  slug, isNum, normStr, toScorerArray,
+  pointsFor, pointsForClassified, pointsForBrazilGoals, pointsForScorer,
+  gameLocked, prevGameFinished, calcStandings,
+} from "./lib/scoring.js";
 
 /* ------------------------------------------------------------------ *
  *  BOLÃO DA FAMÍLIA · Brasil na Copa 2026 (Grupo C)
@@ -74,74 +79,10 @@ const store = {
   },
 };
 
-/* ----------------------------- utils ----------------------------- */
-const slug = (s) =>
-  "p_" +
-  s.toLowerCase().normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-
-const isNum = (v) => v !== "" && v !== null && v !== undefined && !Number.isNaN(Number(v));
-
-const normStr = (s) =>
-  (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
-
-/* ----------------------------- scoring ----------------------------- */
-function pointsFor(pred, res) {
-  if (!pred || !res) return null;
-  if (!isNum(pred.h) || !isNum(pred.a) || !isNum(res.h) || !isNum(res.a)) return null;
-  const ph = +pred.h, pa = +pred.a, rh = +res.h, ra = +res.a;
-  if (ph === rh && pa === ra) return 3;
-  if (Math.sign(ph - pa) === Math.sign(rh - ra)) return 2;
-  return 0;
-}
-
-function pointsForClassified(pred, official) {
-  if (!pred || !official || pred.length !== 2 || official.length !== 2) return null;
-  const predSet = new Set(pred);
-  return official.every((code) => predSet.has(code)) ? 3 : 0;
-}
-
-function pointsForBrazilGoals(pred, official) {
-  if (!isNum(pred) || !isNum(official)) return null;
-  const diff = Math.abs(+pred - +official);
-  if (diff === 0) return 2;
-  if (diff === 1) return 1;
-  return 0;
-}
-
-function pointsForScorer(predArray, officialList) {
-  // predArray: array of up to 3 player name strings
-  // officialList: array of players who actually scored
-  if (!predArray || !officialList) return null;
-  const preds = (Array.isArray(predArray) ? predArray : [predArray]).filter(Boolean).map(normStr);
-  if (preds.length === 0) return null;
-  const hits = preds.filter((p) => officialList.some((o) => normStr(o) === p)).length;
-  return hits; // 0, 1, 2 or 3
-}
-
-const toScorerArray = (v) => {
-  if (Array.isArray(v)) return [...v, "", "", ""].slice(0, 3).map(String);
-  if (typeof v === "string" && v) return [v, "", ""];
-  return ["", "", ""];
-};
-
-const gameLocked = (game, results) => {
-  const res = results[game.id];
-  const finished = res && isNum(res.h) && isNum(res.a);
-  const started = Date.now() >= new Date(game.kickoff).getTime();
-  return { finished, started, locked: finished || started };
-};
-
-// A game is only open for betting after the previous game has an official result
-const prevGameFinished = (gameIndex, results) => {
-  if (gameIndex === 0) return true;
-  const prev = GAMES[gameIndex - 1];
-  const r = results[prev.id];
-  return r && isNum(r.h) && isNum(r.a);
-};
+/* ----------------------------- utils (local wrappers) ----------------------------- */
+// prevGameFinished uses GAMES constant so keep it here
+const prevGameFinishedLocal = (gameIndex, results) =>
+  prevGameFinished(gameIndex, GAMES, results);
 
 const G1_KICKOFF = new Date(GAMES[0].kickoff).getTime();
 const preLockExpired = () => Date.now() >= G1_KICKOFF;
@@ -256,6 +197,24 @@ export default function App() {
     return () => clearInterval(interval);
   }, [approvalStatus, me, loadAll, loginAs]);
 
+  const logout = useCallback(() => {
+    localStorage.removeItem("bolao_me");
+    setMe(null);
+    setApprovalStatus(null);
+    setNameInput("");
+  }, []);
+
+  // Detecta remoção pelo admin: se pred: sumir do banco, desloga em até 10s
+  useEffect(() => {
+    if (!me || approvalStatus !== "approved") return;
+    const check = async () => {
+      const r = await store.get(`pred:${me.id}`);
+      if (!r) logout();
+    };
+    const interval = setInterval(check, 10_000);
+    return () => clearInterval(interval);
+  }, [me, approvalStatus, logout]);
+
   const flash = (m) => {
     setToast(m);
     setTimeout(() => setToast(""), 2400);
@@ -297,18 +256,17 @@ export default function App() {
     localStorage.setItem("bolao_me", JSON.stringify({ id, name }));
   };
 
-  const logout = () => {
-    localStorage.removeItem("bolao_me");
-    setMe(null);
-    setApprovalStatus(null);
-    setNameInput("");
-  };
-
   const approveUser = async (id) => {
     const r = await store.get(`approval:${id}`);
     if (!r?.value) return;
     const data = JSON.parse(r.value);
     await store.set(`approval:${id}`, JSON.stringify({ ...data, status: "approved", approvedAt: Date.now() }));
+    // Cria registro mínimo no pred: para aparecer imediatamente na lista de participantes
+    const existing = await store.get(`pred:${id}`);
+    if (!existing) {
+      await store.set(`pred:${id}`, JSON.stringify({ id: data.id, name: data.name, scores: {}, updatedAt: Date.now() }));
+    }
+    await loadAll();
   };
 
   const rejectUser = async (id) => {
@@ -345,7 +303,7 @@ export default function App() {
     const scores = { ...(existing.scores || {}) };
     GAMES.forEach((g, i) => {
       const { locked } = gameLocked(g, results);
-      const open = prevGameFinished(i, results);
+      const open = prevGameFinishedLocal(i, results);
       const cur = myScores[g.id];
       if (!locked && open && cur && isNum(cur.h) && isNum(cur.a)) {
         scores[g.id] = { h: +cur.h, a: +cur.a };
@@ -355,7 +313,7 @@ export default function App() {
     const scorers = { ...(existing.scorers || {}) };
     GAMES.forEach((g, i) => {
       const { locked } = gameLocked(g, results);
-      const open = prevGameFinished(i, results);
+      const open = prevGameFinishedLocal(i, results);
       const arr = myScorers[g.id] || [];
       if (!locked && open && arr.some((s) => s.trim())) {
         scorers[g.id] = arr.map((s) => s.trim());
@@ -422,43 +380,10 @@ export default function App() {
   };
 
   /* standings */
-  const standings = useMemo(() => {
-    const rows = players.map((p) => {
-      let pts = 0;
-      let cravadas = 0;
-
-      GAMES.forEach((g) => {
-        const res = results[g.id];
-        if (!res || !isNum(res.h) || !isNum(res.a)) return;
-
-        const pr = pointsFor(p.scores?.[g.id], res);
-        if (pr !== null) {
-          pts += pr;
-          if (pr === 3) cravadas++;
-        }
-
-        const officialScorers = results.scorers?.[g.id];
-        if (officialScorers) {
-          const sp = pointsForScorer(p.scorers?.[g.id], officialScorers);
-          if (sp !== null) pts += sp;
-        }
-      });
-
-      if (results.classified?.length === 2 && p.classified?.length === 2) {
-        const cp = pointsForClassified(p.classified, results.classified);
-        if (cp !== null) pts += cp;
-      }
-
-      if (isNum(results.brazilGoals) && isNum(p.brazilGoals)) {
-        const gp = pointsForBrazilGoals(p.brazilGoals, results.brazilGoals);
-        if (gp !== null) pts += gp;
-      }
-
-      return { ...p, pts, cravadas };
-    });
-    rows.sort((a, b) => b.pts - a.pts || b.cravadas - a.cravadas || a.name.localeCompare(b.name));
-    return rows;
-  }, [players, results, tick]);
+  const standings = useMemo(
+    () => calcStandings(players, results, GAMES),
+    [players, results, tick]
+  );
 
   const finishedGames = GAMES.filter((g) => gameLocked(g, results).locked);
 
@@ -732,7 +657,7 @@ function Palpites({ myScores, setMyScore, myClassified, toggleClassified, myBraz
       {/* === Game cards === */}
       {GAMES.map((g, gi) => {
         const { finished, started, locked } = gameLocked(g, results);
-        const prevDone = prevGameFinished(gi, results);
+        const prevDone = prevGameFinishedLocal(gi, results);
         const unavailable = !prevDone && !locked; // previous game not done yet
         const effectiveLocked = locked || unavailable;
         const res = results[g.id];
@@ -889,21 +814,47 @@ function Tabela({ standings, finishedGames, players, results, me }) {
         </div>
       ) : (
         <div className="board">
-          {standings.map((p, i) => (
-            <div className={"row" + (p.id === me.id ? " mine" : "")} key={p.id}>
-              <span className={"rank r" + Math.min(i + 1, 4)}>
-                {i === 0 ? <Crown size={15} /> : i + 1}
-              </span>
-              <span className="rname">
-                {p.name}
-                {p.id === me.id && <em> (você)</em>}
-              </span>
-              <span className="rmeta">
-                {p.cravadas > 0 && <span className="crav">{p.cravadas} ⚡</span>}
-              </span>
-              <span className="rpts">{p.pts}</span>
-            </div>
-          ))}
+          {standings.map((p, i) => {
+            const bk = p.breakdown || {};
+            const gameChips = GAMES
+              .filter((g) => bk.games?.[g.id] !== undefined)
+              .map((g, gi) => ({ label: `J${gi + 1}`, pts: bk.games[g.id] }));
+            return (
+              <div className={"row" + (p.id === me.id ? " mine" : "")} key={p.id}>
+                <span className={"rank r" + Math.min(i + 1, 4)}>
+                  {i === 0 ? <Crown size={15} /> : i + 1}
+                </span>
+                <span className="rname">
+                  <span className="rname-top">
+                    {p.name}{p.id === me.id && <em> (você)</em>}
+                  </span>
+                  {(gameChips.length > 0 || bk.classified !== null || bk.brazilGoals !== null) && (
+                    <span className="breakdown">
+                      {gameChips.map(({ label, pts }) => (
+                        <span key={label} className={"bk-chip" + (pts > 0 ? " good" : " zero")}>
+                          {label} {pts > 0 ? `+${pts}` : "0"}
+                        </span>
+                      ))}
+                      {bk.classified !== null && (
+                        <span className={"bk-chip bonus" + (bk.classified > 0 ? "" : " zero")}>
+                          Class {bk.classified > 0 ? `+${bk.classified}` : "0"}
+                        </span>
+                      )}
+                      {bk.brazilGoals !== null && (
+                        <span className={"bk-chip bonus" + (bk.brazilGoals > 0 ? "" : " zero")}>
+                          Gols {bk.brazilGoals > 0 ? `+${bk.brazilGoals}` : "0"}
+                        </span>
+                      )}
+                    </span>
+                  )}
+                </span>
+                <span className="rmeta">
+                  {p.cravadas > 0 && <span className="crav">{p.cravadas} ⚡</span>}
+                </span>
+                <span className="rpts">{p.pts}</span>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -1246,7 +1197,7 @@ function Organizador({ results, onSave, onSaveClassified, onSaveBrazilGoals, onS
             <Check size={14} /> {results.classified?.length === 2 ? "Atualizar" : "Lançar"}
           </button>
         </div>
-        {results.classified?.length === 3 && (
+        {results.classified?.length === 2 && (
           <div className="org-saved-info">
             Salvo: {results.classified.map((c) => GROUP_TEAMS.find((t) => t.code === c)?.flag + " " + c).join(" · ")}
           </div>
@@ -1690,8 +1641,15 @@ const CSS = `
 .rank.r1{background:var(--canary);color:#1a1300}
 .rank.r2{background:#c8d3cc;color:#0a2014}
 .rank.r3{background:#cf9b63;color:#241300}
-.rname{font-weight:600;font-size:15px}
+.rname{display:flex;flex-direction:column;gap:4px;min-width:0}
+.rname-top{font-weight:600;font-size:15px}
 .rname em{color:var(--muted);font-style:normal;font-size:12px}
+.breakdown{display:flex;flex-wrap:wrap;gap:3px}
+.bk-chip{font-size:10px;font-weight:700;padding:2px 6px;border-radius:6px;white-space:nowrap}
+.bk-chip.good{color:var(--grass2);background:rgba(34,180,99,.12)}
+.bk-chip.zero{color:var(--muted);background:rgba(255,255,255,.05)}
+.bk-chip.bonus{color:var(--canary);background:rgba(255,210,0,.1)}
+.bk-chip.bonus.zero{color:var(--muted);background:rgba(255,255,255,.05)}
 .rmeta{font-size:11px}
 .crav{color:var(--canary);font-weight:700}
 .rpts{font-family:'Anton',sans-serif;font-size:22px;text-align:right;color:var(--canary)}
