@@ -1,16 +1,12 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { Lock, Trophy, Ticket, Settings, Check, Eye, EyeOff, RefreshCw, Crown } from "lucide-react";
+import { Lock, Trophy, Ticket, Settings, Check, Eye, EyeOff, RefreshCw, Crown, Target, Users, Zap } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
 /* ------------------------------------------------------------------ *
  *  BOLÃO DA FAMÍLIA · Brasil na Copa 2026 (Grupo C)
- *  - Cada pessoa entra com o nome e dá o placar dos 3 jogos do Brasil
- *  - Palpites ficam SECRETOS até o jogo travar (apito inicial) ou
- *    até o organizador lançar o placar oficial. Aí tudo é revelado.
- *  - Pontos: cravou o placar = 2 | acertou só o vencedor = 1 | errou = 0
  * ------------------------------------------------------------------ */
 
-const ORG_CODE = "arichan"; // código que só o organizador conhece
+const ORG_CODE = "arichan";
 
 const GAMES = [
   {
@@ -20,7 +16,7 @@ const GAMES = [
     away: { code: "MAR", name: "Marrocos", flag: "🇲🇦" },
     when: "Sáb 13/jun · 19h",
     venue: "Nova York / NJ",
-    kickoff: "2026-06-13T22:00:00Z", // 19h Brasília
+    kickoff: "2026-06-13T22:00:00Z",
   },
   {
     id: "g2",
@@ -29,7 +25,7 @@ const GAMES = [
     away: { code: "HAI", name: "Haiti", flag: "🇭🇹" },
     when: "Sex 19/jun · 22h",
     venue: "Filadélfia",
-    kickoff: "2026-06-20T01:00:00Z", // 22h Brasília
+    kickoff: "2026-06-20T01:00:00Z",
   },
   {
     id: "g3",
@@ -38,14 +34,17 @@ const GAMES = [
     away: { code: "BRA", name: "Brasil", flag: "🇧🇷" },
     when: "Qua 24/jun · 19h",
     venue: "Miami",
-    kickoff: "2026-06-24T22:00:00Z", // 19h Brasília
+    kickoff: "2026-06-24T22:00:00Z",
   },
 ];
 
-/* --------------------------- armazenamento --------------------------- */
-// Guarda palpites e placares no Supabase (tabela "kv"), compartilhado
-// entre todos que abrirem o link. As chaves vêm das variáveis de ambiente
-// VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY (configuradas na Vercel).
+const GROUP_TEAMS = [
+  { code: "BRA", name: "Brasil", flag: "🇧🇷" },
+  { code: "MAR", name: "Marrocos", flag: "🇲🇦" },
+  { code: "HAI", name: "Haiti", flag: "🇭🇹" },
+  { code: "ESC", name: "Escócia", flag: "🏴󠁧󠁢󠁳󠁣󠁴󠁿" },
+];
+
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
   import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -54,10 +53,7 @@ const supabase = createClient(
 const store = {
   async list(prefix) {
     const { data, error } = await supabase.from("kv").select("key").like("key", `${prefix}%`);
-    if (error) {
-      console.error("list", error);
-      return { keys: [] };
-    }
+    if (error) { console.error("list", error); return { keys: [] }; }
     return { keys: (data || []).map((r) => r.key) };
   },
   async get(key) {
@@ -69,10 +65,7 @@ const store = {
     const { error } = await supabase
       .from("kv")
       .upsert({ key, value, updated_at: new Date().toISOString() });
-    if (error) {
-      console.error("set", error);
-      return null;
-    }
+    if (error) { console.error("set", error); return null; }
     return { key, value };
   },
 };
@@ -80,24 +73,56 @@ const store = {
 /* ----------------------------- utils ----------------------------- */
 const slug = (s) =>
   "p_" +
-  s
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
+  s.toLowerCase().normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
 
 const isNum = (v) => v !== "" && v !== null && v !== undefined && !Number.isNaN(Number(v));
 
+const normStr = (s) =>
+  (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+
+/* ----------------------------- scoring ----------------------------- */
 function pointsFor(pred, res) {
   if (!pred || !res) return null;
   if (!isNum(pred.h) || !isNum(pred.a) || !isNum(res.h) || !isNum(res.a)) return null;
   const ph = +pred.h, pa = +pred.a, rh = +res.h, ra = +res.a;
-  if (ph === rh && pa === ra) return 2;
-  if (Math.sign(ph - pa) === Math.sign(rh - ra)) return 1;
+  if (ph === rh && pa === ra) return 3;
+  if (Math.sign(ph - pa) === Math.sign(rh - ra)) return 2;
   return 0;
 }
+
+function pointsForClassified(pred, official) {
+  if (!pred || !official || pred.length !== 2 || official.length !== 2) return null;
+  const predSet = new Set(pred);
+  return official.every((code) => predSet.has(code)) ? 3 : 0;
+}
+
+function pointsForBrazilGoals(pred, official) {
+  if (!isNum(pred) || !isNum(official)) return null;
+  const diff = Math.abs(+pred - +official);
+  if (diff === 0) return 2;
+  if (diff === 1) return 1;
+  return 0;
+}
+
+function pointsForScorer(predArray, officialList) {
+  // predArray: array of up to 3 player name strings
+  // officialList: array of players who actually scored
+  if (!predArray || !officialList) return null;
+  const preds = (Array.isArray(predArray) ? predArray : [predArray]).filter(Boolean).map(normStr);
+  if (preds.length === 0) return null;
+  const hits = preds.filter((p) => officialList.some((o) => normStr(o) === p)).length;
+  return hits; // 0, 1, 2 or 3
+}
+
+const toScorerArray = (v) => {
+  if (Array.isArray(v)) return [...v, "", "", ""].slice(0, 3).map(String);
+  if (typeof v === "string" && v) return [v, "", ""];
+  return ["", "", ""];
+};
 
 const gameLocked = (game, results) => {
   const res = results[game.id];
@@ -106,21 +131,34 @@ const gameLocked = (game, results) => {
   return { finished, started, locked: finished || started };
 };
 
+// A game is only open for betting after the previous game has an official result
+const prevGameFinished = (gameIndex, results) => {
+  if (gameIndex === 0) return true;
+  const prev = GAMES[gameIndex - 1];
+  const r = results[prev.id];
+  return r && isNum(r.h) && isNum(r.a);
+};
+
+const G1_KICKOFF = new Date(GAMES[0].kickoff).getTime();
+const preLockExpired = () => Date.now() >= G1_KICKOFF;
+
 /* ============================== APP ============================== */
 export default function App() {
-  const [me, setMe] = useState(null); // {id, name}
+  const [me, setMe] = useState(null);
   const [nameInput, setNameInput] = useState("");
   const [tab, setTab] = useState("palpites");
-  const [players, setPlayers] = useState([]); // [{id,name,scores}]
-  const [results, setResults] = useState({}); // {g1:{h,a}}
-  const [myScores, setMyScores] = useState({}); // {g1:{h,a}}
+  const [players, setPlayers] = useState([]);
+  const [results, setResults] = useState({});
+  const [myScores, setMyScores] = useState({});
+  const [myClassified, setMyClassified] = useState([]);
+  const [myBrazilGoals, setMyBrazilGoals] = useState("");
+  const [myScorers, setMyScorers] = useState({ g1: ["", "", ""], g2: ["", "", ""], g3: ["", "", ""] });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
   const [orgUnlocked, setOrgUnlocked] = useState(false);
-  const [tick, setTick] = useState(0); // re-render p/ atualizar locks no tempo
+  const [tick, setTick] = useState(0);
 
-  // relógio leve: re-render a cada 30s para travar jogos no horário
   useEffect(() => {
     const t = setInterval(() => setTick((x) => x + 1), 30000);
     return () => clearInterval(t);
@@ -133,17 +171,13 @@ export default function App() {
     for (const k of keys) {
       const r = await store.get(k);
       if (r && r.value) {
-        try {
-          ps.push(JSON.parse(r.value));
-        } catch {}
+        try { ps.push(JSON.parse(r.value)); } catch {}
       }
     }
     let res = {};
     const rr = await store.get("results");
     if (rr && rr.value) {
-      try {
-        res = JSON.parse(rr.value);
-      } catch {}
+      try { res = JSON.parse(rr.value); } catch {}
     }
     setPlayers(ps);
     setResults(res);
@@ -151,13 +185,38 @@ export default function App() {
     return { ps, res };
   }, []);
 
+  const loginAs = useCallback((id, name, ps) => {
+    const mine = ps.find((p) => p.id === id);
+    const start = {};
+    GAMES.forEach((g) => {
+      start[g.id] = mine?.scores?.[g.id] ? { ...mine.scores[g.id] } : { h: "", a: "" };
+    });
+    setMyScores(start);
+    setMyClassified(mine?.classified || []);
+    setMyBrazilGoals(mine?.brazilGoals !== undefined ? String(mine.brazilGoals) : "");
+    setMyScorers({
+      g1: toScorerArray(mine?.scorers?.g1),
+      g2: toScorerArray(mine?.scorers?.g2),
+      g3: toScorerArray(mine?.scorers?.g3),
+    });
+    setMe({ id, name: mine?.name || name });
+  }, []);
+
   useEffect(() => {
-    loadAll();
-  }, [loadAll]);
+    loadAll().then(({ ps }) => {
+      try {
+        const saved = localStorage.getItem("bolao_me");
+        if (saved) {
+          const { id, name } = JSON.parse(saved);
+          if (id && name) loginAs(id, name, ps);
+        }
+      } catch {}
+    });
+  }, [loadAll, loginAs]);
 
   const flash = (m) => {
     setToast(m);
-    setTimeout(() => setToast(""), 2200);
+    setTimeout(() => setToast(""), 2400);
   };
 
   const enterName = async () => {
@@ -165,13 +224,14 @@ export default function App() {
     if (name.length < 2) return;
     const id = slug(name);
     const { ps } = await loadAll();
-    const mine = ps.find((p) => p.id === id);
-    const start = {};
-    GAMES.forEach((g) => {
-      start[g.id] = mine?.scores?.[g.id] ? { ...mine.scores[g.id] } : { h: "", a: "" };
-    });
-    setMyScores(start);
-    setMe({ id, name: mine?.name || name });
+    loginAs(id, name, ps);
+    localStorage.setItem("bolao_me", JSON.stringify({ id, name }));
+  };
+
+  const logout = () => {
+    localStorage.removeItem("bolao_me");
+    setMe(null);
+    setNameInput("");
   };
 
   const setMyScore = (gid, side, val) => {
@@ -179,20 +239,57 @@ export default function App() {
     setMyScores((s) => ({ ...s, [gid]: { ...s[gid], [side]: clean } }));
   };
 
+  const toggleClassified = (code) => {
+    if (preLockExpired()) return;
+    setMyClassified((prev) => {
+      if (prev.includes(code)) return prev.filter((c) => c !== code);
+      if (prev.length >= 2) return prev;
+      return [...prev, code];
+    });
+  };
+
   const saveMyPicks = async () => {
     if (!me) return;
     setSaving(true);
-    // só persiste jogos ainda abertos (não trava palpite já fechado)
-    const existing = players.find((p) => p.id === me.id)?.scores || {};
-    const scores = { ...existing };
-    GAMES.forEach((g) => {
+    const existing = players.find((p) => p.id === me.id) || {};
+
+    const scores = { ...(existing.scores || {}) };
+    GAMES.forEach((g, i) => {
       const { locked } = gameLocked(g, results);
+      const open = prevGameFinished(i, results);
       const cur = myScores[g.id];
-      if (!locked && cur && isNum(cur.h) && isNum(cur.a)) {
+      if (!locked && open && cur && isNum(cur.h) && isNum(cur.a)) {
         scores[g.id] = { h: +cur.h, a: +cur.a };
       }
     });
-    const record = { id: me.id, name: me.name, scores, updatedAt: Date.now() };
+
+    const scorers = { ...(existing.scorers || {}) };
+    GAMES.forEach((g, i) => {
+      const { locked } = gameLocked(g, results);
+      const open = prevGameFinished(i, results);
+      const arr = myScorers[g.id] || [];
+      if (!locked && open && arr.some((s) => s.trim())) {
+        scorers[g.id] = arr.map((s) => s.trim());
+      }
+    });
+
+    const classified = preLockExpired()
+      ? (existing.classified || [])
+      : myClassified;
+
+    const brazilGoals = preLockExpired()
+      ? existing.brazilGoals
+      : isNum(myBrazilGoals) ? +myBrazilGoals : undefined;
+
+    const record = {
+      id: me.id,
+      name: me.name,
+      scores,
+      classified,
+      brazilGoals,
+      scorers,
+      updatedAt: Date.now(),
+    };
     await store.set(`pred:${me.id}`, JSON.stringify(record));
     await loadAll();
     setSaving(false);
@@ -208,21 +305,67 @@ export default function App() {
     flash("Placar oficial lançado!");
   };
 
-  /* --------------------------- classificação --------------------------- */
+  const saveOfficialClassified = async (classified) => {
+    const next = { ...results, classified };
+    setResults(next);
+    await store.set("results", JSON.stringify(next));
+    flash("Classificados oficiais salvos!");
+  };
+
+  const saveOfficialBrazilGoals = async (goals) => {
+    const next = { ...results, brazilGoals: +goals };
+    setResults(next);
+    await store.set("results", JSON.stringify(next));
+    flash("Total de gols salvo!");
+  };
+
+  const saveOfficialScorer = async (gid, scorerStr) => {
+    const scorers = results.scorers ? { ...results.scorers } : {};
+    if (scorerStr.trim()) {
+      scorers[gid] = scorerStr.split(",").map((s) => s.trim()).filter(Boolean);
+    } else {
+      delete scorers[gid];
+    }
+    const next = { ...results, scorers };
+    setResults(next);
+    await store.set("results", JSON.stringify(next));
+    flash("Goleadores salvos!");
+  };
+
+  /* standings */
   const standings = useMemo(() => {
     const rows = players.map((p) => {
-      let pts = 0, cravadas = 0, acertos = 0, jogados = 0;
+      let pts = 0;
+      let cravadas = 0;
+
       GAMES.forEach((g) => {
         const res = results[g.id];
         if (!res || !isNum(res.h) || !isNum(res.a)) return;
+
         const pr = pointsFor(p.scores?.[g.id], res);
-        if (pr === null) return; // não palpitou
-        jogados++;
-        pts += pr;
-        if (pr === 2) cravadas++;
-        if (pr >= 1) acertos++;
+        if (pr !== null) {
+          pts += pr;
+          if (pr === 3) cravadas++;
+        }
+
+        const officialScorers = results.scorers?.[g.id];
+        if (officialScorers) {
+          const sp = pointsForScorer(p.scorers?.[g.id], officialScorers);
+          if (sp !== null) pts += sp;
+        }
       });
-      return { ...p, pts, cravadas, acertos, jogados };
+
+      if (results.classified?.length === 2 && p.classified?.length === 2) {
+        const cp = pointsForClassified(p.classified, results.classified);
+        if (cp !== null) pts += cp;
+      }
+
+      if (isNum(results.brazilGoals) && isNum(p.brazilGoals)) {
+        const gp = pointsForBrazilGoals(p.brazilGoals, results.brazilGoals);
+        if (gp !== null) pts += gp;
+      }
+
+      return { ...p, pts, cravadas };
     });
     rows.sort((a, b) => b.pts - a.pts || b.cravadas - a.cravadas || a.name.localeCompare(b.name));
     return rows;
@@ -245,7 +388,7 @@ export default function App() {
         />
       ) : (
         <div className="shell">
-          <Header me={me} count={players.length} onRefresh={loadAll} />
+          <Header me={me} count={players.length} onRefresh={loadAll} onLogout={logout} />
 
           <nav className="tabs">
             <button className={tab === "palpites" ? "tab on" : "tab"} onClick={() => setTab("palpites")}>
@@ -253,10 +396,7 @@ export default function App() {
             </button>
             <button
               className={tab === "tabela" ? "tab on" : "tab"}
-              onClick={() => {
-                loadAll();
-                setTab("tabela");
-              }}
+              onClick={() => { loadAll(); setTab("tabela"); }}
             >
               <Trophy size={16} /> Classificação
             </button>
@@ -269,11 +409,18 @@ export default function App() {
             <Palpites
               myScores={myScores}
               setMyScore={setMyScore}
+              myClassified={myClassified}
+              toggleClassified={toggleClassified}
+              myBrazilGoals={myBrazilGoals}
+              setMyBrazilGoals={setMyBrazilGoals}
+              myScorers={myScorers}
+              setMyScorers={setMyScorers}
               results={results}
               players={players}
               me={me}
               onSave={saveMyPicks}
               saving={saving}
+              tick={tick}
             />
           )}
 
@@ -285,6 +432,9 @@ export default function App() {
             <Organizador
               results={results}
               onSave={saveResult}
+              onSaveClassified={saveOfficialClassified}
+              onSaveBrazilGoals={saveOfficialBrazilGoals}
+              onSaveScorer={saveOfficialScorer}
               unlocked={orgUnlocked}
               setUnlocked={setOrgUnlocked}
             />
@@ -307,12 +457,14 @@ function Gate({ nameInput, setNameInput, onEnter, count, loading }) {
           BOLÃO DA<br />FAMÍLIA
         </h1>
         <p className="gate-sub">
-          Palpite nos 3 jogos do Brasil. Cada aposta fica <b>secreta</b> até o apito inicial — aí revela todo mundo
-          junto, com os pontos.
+          Palpite nos 3 jogos do Brasil, escolha os 3 classificados, o goleador e mais. Cada aposta fica <b>secreta</b> até o apito inicial.
         </p>
         <div className="rules-row">
-          <span className="pill gold">Cravou o placar · 2 pts</span>
-          <span className="pill grass">Só o vencedor · 1 pt</span>
+          <span className="pill gold">Cravou placar · +3</span>
+          <span className="pill grass">Acertou resultado · +2</span>
+          <span className="pill blue">2 classificados · +3</span>
+          <span className="pill orange">3 goleadores/jogo · +1/+2/+3</span>
+          <span className="pill purple">Total gols Brasil · +2/+1</span>
         </div>
         <label className="gate-label">Seu nome</label>
         <div className="gate-input">
@@ -342,7 +494,7 @@ function Gate({ nameInput, setNameInput, onEnter, count, loading }) {
 }
 
 /* ----------------------------- Header ----------------------------- */
-function Header({ me, count, onRefresh }) {
+function Header({ me, count, onRefresh, onLogout }) {
   return (
     <header className="hdr">
       <div>
@@ -356,30 +508,119 @@ function Header({ me, count, onRefresh }) {
         <button className="icon-btn" onClick={onRefresh} title="Atualizar">
           <RefreshCw size={16} />
         </button>
+        <button className="icon-btn logout-btn" onClick={onLogout} title="Trocar usuário">
+          ↩
+        </button>
       </div>
     </header>
   );
 }
 
 /* --------------------------- Palpites tab --------------------------- */
-function Palpites({ myScores, setMyScore, results, players, me, onSave, saving }) {
+function Palpites({ myScores, setMyScore, myClassified, toggleClassified, myBrazilGoals, setMyBrazilGoals, myScorers, setMyScorers, results, players, me, onSave, saving, tick }) {
+  const locked1 = Date.now() >= G1_KICKOFF;
+
   return (
     <div className="pane">
       <div className="legend">
         <EyeOff size={14} /> Só você vê seus palpites. Eles travam no horário do jogo.
       </div>
 
-      {GAMES.map((g) => {
+      {/* === 2 Classificados === */}
+      <div className={"bonus-card" + (locked1 ? " locked" : "")}>
+        <div className="bonus-head">
+          <Users size={15} />
+          <span>2 Classificados do Grupo C</span>
+          <span className="bonus-pts">+3 pts</span>
+          {locked1 && <span className="status done" style={{ marginLeft: "auto" }}>Travado</span>}
+        </div>
+        <p className="bonus-sub">Quais 2 times vão avançar? (ordem não importa · bloqueia no 1° jogo)</p>
+        <div className="team-chips">
+          {GROUP_TEAMS.map((t) => {
+            const selected = myClassified.includes(t.code);
+            const atLimit = myClassified.length >= 2;
+            return (
+              <button
+                key={t.code}
+                className={"team-chip" + (selected ? " selected" : "") + (!selected && atLimit ? " dim" : "")}
+                onClick={() => toggleClassified(t.code)}
+                disabled={locked1 || (!selected && atLimit)}
+                type="button"
+              >
+                {t.flag} {t.name}
+                {selected && <Check size={12} />}
+              </button>
+            );
+          })}
+        </div>
+        {myClassified.length > 0 && (
+          <div className="bonus-sel">
+            {myClassified.map((c) => GROUP_TEAMS.find((t) => t.code === c)?.flag + " " + c).join(" · ")}
+            {myClassified.length < 2 && !locked1 && (
+              <span className="muted"> — selecione {2 - myClassified.length} mais</span>
+            )}
+          </div>
+        )}
+        {myClassified.length === 0 && locked1 && (
+          <div className="bonus-sel muted">nenhum palpite registrado</div>
+        )}
+      </div>
+
+      {/* === Total de Gols Brasil === */}
+      <div className={"bonus-card" + (locked1 ? " locked" : "")}>
+        <div className="bonus-head">
+          <Target size={15} />
+          <span>Total de gols do Brasil na fase de grupos</span>
+          <span className="bonus-pts">+2 exato · +1 perto</span>
+          {locked1 && <span className="status done" style={{ marginLeft: "auto" }}>Travado</span>}
+        </div>
+        <p className="bonus-sub">Quantos gols o Brasil vai marcar nos 3 jogos? (bloqueia no 1° jogo)</p>
+        <div className="goals-row">
+          {locked1 ? (
+            <div className="goals-locked">
+              <span className="goals-num">{myBrazilGoals !== "" ? myBrazilGoals : "—"}</span>
+              <span className="goals-label">gols</span>
+            </div>
+          ) : (
+            <>
+              <input
+                inputMode="numeric"
+                value={myBrazilGoals}
+                onChange={(e) => setMyBrazilGoals(e.target.value.replace(/[^0-9]/g, "").slice(0, 2))}
+                placeholder="–"
+                className="score-in"
+                maxLength={2}
+              />
+              {myBrazilGoals !== "" && (
+                <span className="goals-label">gols</span>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* === Game cards === */}
+      {GAMES.map((g, gi) => {
         const { finished, started, locked } = gameLocked(g, results);
+        const prevDone = prevGameFinished(gi, results);
+        const unavailable = !prevDone && !locked; // previous game not done yet
+        const effectiveLocked = locked || unavailable;
         const res = results[g.id];
         const cur = myScores[g.id] || { h: "", a: "" };
         const others = players.filter((p) => p.id !== me.id && p.scores?.[g.id]).length;
+        const officialScorers = results.scorers?.[g.id] || [];
+        const myScorer = toScorerArray(myScorers[g.id]);
+        const scorerResult = finished && officialScorers.length > 0
+          ? pointsForScorer(myScorer, officialScorers)
+          : null;
 
         return (
-          <div className={"ticket" + (locked ? " locked" : "")} key={g.id}>
+          <div className={"ticket" + (effectiveLocked ? " locked" : "") + (unavailable ? " unavailable" : "")} key={g.id}>
             <div className="ticket-top">
               <span className="ticket-group">{g.group}</span>
-              {locked ? (
+              {unavailable ? (
+                <span className="status waiting">Aguardando rodada anterior</span>
+              ) : locked ? (
                 <span className={"status " + (finished ? "done" : "live")}>
                   {finished ? "Encerrado" : "Bola rolando"}
                 </span>
@@ -395,7 +636,7 @@ function Palpites({ myScores, setMyScore, results, players, me, onSave, saving }
                   className="score-in"
                   inputMode="numeric"
                   value={cur.h}
-                  disabled={locked}
+                  disabled={effectiveLocked}
                   onChange={(e) => setMyScore(g.id, "h", e.target.value)}
                   placeholder="–"
                   aria-label={`gols ${g.home.name}`}
@@ -405,13 +646,52 @@ function Palpites({ myScores, setMyScore, results, players, me, onSave, saving }
                   className="score-in"
                   inputMode="numeric"
                   value={cur.a}
-                  disabled={locked}
+                  disabled={effectiveLocked}
                   onChange={(e) => setMyScore(g.id, "a", e.target.value)}
                   placeholder="–"
                   aria-label={`gols ${g.away.name}`}
                 />
               </div>
               <Team t={g.away} right />
+            </div>
+
+            {/* Scorers (3 players) */}
+            <div className="scorer-section">
+              <div className="scorer-section-head">
+                <Zap size={13} className="scorer-icon" />
+                <span className="scorer-label">Quem vai marcar gol?</span>
+                {!effectiveLocked && <span className="scorer-pts-badge">+1 · +2 · +3</span>}
+                {scorerResult !== null && (
+                  <span className={"scorer-badge " + (scorerResult > 0 ? "hit" : "miss")}>
+                    {scorerResult > 0 ? `+${scorerResult}` : "0"}
+                  </span>
+                )}
+              </div>
+              <div className="scorer-inputs">
+                {[0, 1, 2].map((idx) => (
+                  effectiveLocked ? (
+                    <span key={idx} className={"scorer-chip" + (
+                      scorerResult !== null && myScorer[idx] && officialScorers.some(o => normStr(o) === normStr(myScorer[idx]))
+                        ? " hit" : (myScorer[idx] ? " miss" : " empty")
+                    )}>
+                      {unavailable ? "—" : myScorer[idx] || "—"}
+                    </span>
+                  ) : (
+                    <input
+                      key={idx}
+                      className="scorer-input"
+                      type="text"
+                      value={myScorer[idx] || ""}
+                      onChange={(e) => setMyScorers((s) => ({
+                        ...s,
+                        [g.id]: s[g.id].map((v, i) => i === idx ? e.target.value : v),
+                      }))}
+                      placeholder={`Jogador ${idx + 1}`}
+                      maxLength={40}
+                    />
+                  )
+                ))}
+              </div>
             </div>
 
             <div className="tear">
@@ -421,7 +701,11 @@ function Palpites({ myScores, setMyScore, results, players, me, onSave, saving }
 
             <div className="ticket-foot">
               <span className="venue">📍 {g.venue}</span>
-              {locked ? (
+              {unavailable ? (
+                <span className="muted-foot">
+                  <Lock size={12} /> disponível após a rodada anterior
+                </span>
+              ) : locked ? (
                 finished ? (
                   <span className="official">
                     Oficial: <b>{res.h}–{res.a}</b>
@@ -460,6 +744,7 @@ function Team({ t, right }) {
 /* -------------------------- Classificação -------------------------- */
 function Tabela({ standings, finishedGames, players, results, me }) {
   const anyResult = finishedGames.length > 0;
+
   return (
     <div className="pane">
       <h2 className="pane-title">
@@ -476,7 +761,9 @@ function Tabela({ standings, finishedGames, players, results, me }) {
         <div className="board">
           {standings.map((p, i) => (
             <div className={"row" + (p.id === me.id ? " mine" : "")} key={p.id}>
-              <span className={"rank r" + (i + 1)}>{i === 0 ? <Crown size={15} /> : i + 1}</span>
+              <span className={"rank r" + Math.min(i + 1, 4)}>
+                {i === 0 ? <Crown size={15} /> : i + 1}
+              </span>
               <span className="rname">
                 {p.name}
                 {p.id === me.id && <em> (você)</em>}
@@ -494,32 +781,73 @@ function Tabela({ standings, finishedGames, players, results, me }) {
       {finishedGames.map((g) => {
         const res = results[g.id];
         const finished = res && isNum(res.h) && isNum(res.a);
+        const officialScorers = results.scorers?.[g.id] || [];
+
         const picks = players
           .filter((p) => p.scores?.[g.id])
-          .map((p) => ({ name: p.name, ...p.scores[g.id], pts: finished ? pointsFor(p.scores[g.id], res) : null }))
-          .sort((a, b) => (b.pts ?? -1) - (a.pts ?? -1) || a.name.localeCompare(b.name));
+          .map((p) => {
+            const scorerArr = toScorerArray(p.scorers?.[g.id]);
+            return {
+              id: p.id,
+              name: p.name,
+              score: p.scores[g.id],
+              pts: finished ? pointsFor(p.scores[g.id], res) : null,
+              scorerArr,
+              scorerPts: (finished && officialScorers.length > 0)
+                ? pointsForScorer(scorerArr, officialScorers)
+                : null,
+            };
+          })
+          .sort((a, b) => {
+            const ta = (a.pts ?? 0) + (a.scorerPts ?? 0);
+            const tb = (b.pts ?? 0) + (b.scorerPts ?? 0);
+            return tb - ta || a.name.localeCompare(b.name);
+          });
 
         return (
           <div className="reveal" key={g.id}>
             <div className="reveal-head">
               <Eye size={14} />
               <span>
-                {g.home.flag} {g.home.code} {finished ? `${res.h}–${res.a}` : "× "} {g.away.code} {g.away.flag}
+                {g.home.flag} {g.home.code} {finished ? `${res.h}–${res.a}` : "×"} {g.away.code} {g.away.flag}
               </span>
               <span className="reveal-tag">{finished ? "revelado" : "aguardando placar"}</span>
             </div>
+            {officialScorers.length > 0 && (
+              <div className="reveal-extra">
+                <Zap size={12} /> Goleadores: <b>{officialScorers.join(", ")}</b>
+              </div>
+            )}
             {picks.length === 0 ? (
               <div className="reveal-empty">ninguém palpitou neste jogo</div>
             ) : (
-              picks.map((pk, idx) => (
-                <div className="pick" key={idx}>
-                  <span className="pk-name">{pk.name}</span>
-                  <span className="pk-guess">
-                    {pk.h}–{pk.a}
-                  </span>
+              picks.map((pk) => (
+                <div className="pick" key={pk.id}>
+                  <div className="pk-info">
+                    <span className="pk-name">{pk.name}</span>
+                    {pk.scorerArr.some(Boolean) && (
+                      <span className="pk-scorer">
+                        <Zap size={11} />
+                        {pk.scorerArr.filter(Boolean).map((s, i) => {
+                          const hit = finished && officialScorers.some(o => normStr(o) === normStr(s));
+                          return (
+                            <span key={i} className={"pk-scorer-name " + (finished ? (hit ? "hit" : "miss") : "")}>
+                              {s}
+                            </span>
+                          );
+                        })}
+                        {pk.scorerPts !== null && (
+                          <span className={"pk-scorer-badge " + (pk.scorerPts > 0 ? "hit" : "miss")}>
+                            {pk.scorerPts > 0 ? `+${pk.scorerPts}` : "0"}
+                          </span>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  <span className="pk-guess">{pk.score.h}–{pk.score.a}</span>
                   {finished && (
                     <span className={"pk-pts p" + pk.pts}>
-                      {pk.pts === 2 ? "+2 ⚡" : pk.pts === 1 ? "+1" : "0"}
+                      {pk.pts === 3 ? "+3 ⚡" : pk.pts === 2 ? "+2" : "0"}
                     </span>
                   )}
                 </div>
@@ -528,25 +856,113 @@ function Tabela({ standings, finishedGames, players, results, me }) {
           </div>
         );
       })}
+
+      {/* Classified reveal */}
+      {results.classified?.length === 2 && (
+        <div className="reveal">
+          <div className="reveal-head">
+            <Users size={14} />
+            <span>2 Classificados do Grupo C</span>
+            <span className="reveal-tag">revelado</span>
+          </div>
+          <div className="reveal-extra">
+            Classificados oficiais:{" "}
+            <b>{results.classified.map((c) => GROUP_TEAMS.find((t) => t.code === c)?.flag + " " + c).join(" · ")}</b>
+          </div>
+          {players
+            .filter((p) => p.classified?.length === 2)
+            .map((p) => {
+              const cp = pointsForClassified(p.classified, results.classified);
+              return (
+                <div className="pick" key={p.id}>
+                  <div className="pk-info">
+                    <span className="pk-name">{p.name}</span>
+                    <span className="pk-scorer">
+                      {p.classified.map((c) => GROUP_TEAMS.find((t) => t.code === c)?.flag + " " + c).join(" · ")}
+                    </span>
+                  </div>
+                  <span className={"pk-pts p" + (cp ?? 0)}>
+                    {cp === 3 ? "+3 ⚡" : "0"}
+                  </span>
+                </div>
+              );
+            })}
+        </div>
+      )}
+
+      {/* Brazil goals reveal */}
+      {isNum(results.brazilGoals) && (
+        <div className="reveal">
+          <div className="reveal-head">
+            <Target size={14} />
+            <span>Total de gols do Brasil</span>
+            <span className="reveal-tag">revelado</span>
+          </div>
+          <div className="reveal-extra">
+            Total oficial: <b>{results.brazilGoals} gols</b>
+          </div>
+          {players
+            .filter((p) => isNum(p.brazilGoals))
+            .sort((a, b) => {
+              const ap = pointsForBrazilGoals(a.brazilGoals, results.brazilGoals) ?? -1;
+              const bp = pointsForBrazilGoals(b.brazilGoals, results.brazilGoals) ?? -1;
+              return bp - ap || a.name.localeCompare(b.name);
+            })
+            .map((p) => {
+              const gp = pointsForBrazilGoals(p.brazilGoals, results.brazilGoals);
+              return (
+                <div className="pick" key={p.id}>
+                  <span className="pk-name">{p.name}</span>
+                  <span className="pk-guess">{p.brazilGoals} gols</span>
+                  <span className={"pk-pts p" + (gp ?? 0)}>
+                    {gp > 0 ? `+${gp}` : "0"}
+                  </span>
+                </div>
+              );
+            })}
+        </div>
+      )}
     </div>
   );
 }
 
 /* --------------------------- Organizador --------------------------- */
-function Organizador({ results, onSave, unlocked, setUnlocked }) {
+function Organizador({ results, onSave, onSaveClassified, onSaveBrazilGoals, onSaveScorer, unlocked, setUnlocked }) {
   const [draft, setDraft] = useState(() => {
     const d = {};
     GAMES.forEach((g) => {
-      d[g.id] = results[g.id] ? { h: String(results[g.id].h), a: String(results[g.id].a) } : { h: "", a: "" };
+      d[g.id] = results[g.id]
+        ? { h: String(results[g.id].h), a: String(results[g.id].a) }
+        : { h: "", a: "" };
     });
     return d;
   });
 
-  const upd = (gid, side, val) =>
-    setDraft((s) => ({ ...s, [gid]: { ...s[gid], [side]: val.replace(/[^0-9]/g, "").slice(0, 2) } }));
+  const [draftClassified, setDraftClassified] = useState(results.classified || []);
+  const [draftBrazilGoals, setDraftBrazilGoals] = useState(
+    isNum(results.brazilGoals) ? String(results.brazilGoals) : ""
+  );
+  const [draftScorers, setDraftScorers] = useState(() => {
+    const s = {};
+    GAMES.forEach((g) => {
+      s[g.id] = results.scorers?.[g.id]?.join(", ") || "";
+    });
+    return s;
+  });
 
   const [code, setCode] = useState("");
   const [err, setErr] = useState(false);
+
+  const upd = (gid, side, val) =>
+    setDraft((s) => ({ ...s, [gid]: { ...s[gid], [side]: val.replace(/[^0-9]/g, "").slice(0, 2) } }));
+
+  const toggleOfficialClassified = (code) => {
+    setDraftClassified((prev) => {
+      if (prev.includes(code)) return prev.filter((c) => c !== code);
+      if (prev.length >= 2) return prev;
+      return [...prev, code];
+    });
+  };
 
   const tryUnlock = () => {
     if (code.trim().toLowerCase() === ORG_CODE) {
@@ -564,17 +980,14 @@ function Organizador({ results, onSave, unlocked, setUnlocked }) {
           <Lock size={26} />
           <h2 className="pane-title">Área do organizador</h2>
           <p className="org-sub">
-            Só <b>você</b> lança o placar oficial de cada jogo. Ao lançar, os palpites de todo mundo são revelados e a
-            tabela é atualizada. Digite o código de organizador para abrir.
+            Só <b>você</b> lança os resultados oficiais. Ao lançar, os palpites de todo mundo são revelados e a tabela é
+            atualizada. Digite o código de organizador para abrir.
           </p>
           <div className="code-input">
             <input
               type="password"
               value={code}
-              onChange={(e) => {
-                setCode(e.target.value);
-                setErr(false);
-              }}
+              onChange={(e) => { setCode(e.target.value); setErr(false); }}
               onKeyDown={(e) => e.key === "Enter" && tryUnlock()}
               placeholder="Código de organizador"
               autoComplete="off"
@@ -592,46 +1005,152 @@ function Organizador({ results, onSave, unlocked, setUnlocked }) {
   return (
     <div className="pane">
       <h2 className="pane-title">
-        <Settings size={18} /> Lançar placares oficiais
+        <Settings size={18} /> Resultados oficiais
       </h2>
-      <p className="org-sub">Confirme o placar quando o jogo terminar. Isso revela os palpites e soma os pontos.</p>
+      <p className="org-sub">Lance os resultados após cada jogo para revelar os palpites e somar os pontos.</p>
 
+      {/* Scores + scorers per game */}
       {GAMES.map((g) => {
         const saved = results[g.id];
         const d = draft[g.id];
         return (
           <div className="org-row" key={g.id}>
+            <div className="org-game-label">{g.group} · {g.when}</div>
+
             <div className="org-match">
-              <span>
-                {g.home.flag} {g.home.code}
-              </span>
-              <input className="score-in dark" inputMode="numeric" value={d.h} onChange={(e) => upd(g.id, "h", e.target.value)} placeholder="–" />
+              <span>{g.home.flag} {g.home.code}</span>
+              <input
+                className="score-in dark"
+                inputMode="numeric"
+                value={d.h}
+                onChange={(e) => upd(g.id, "h", e.target.value)}
+                placeholder="–"
+              />
               <span className="x">×</span>
-              <input className="score-in dark" inputMode="numeric" value={d.a} onChange={(e) => upd(g.id, "a", e.target.value)} placeholder="–" />
-              <span>
-                {g.away.code} {g.away.flag}
-              </span>
+              <input
+                className="score-in dark"
+                inputMode="numeric"
+                value={d.a}
+                onChange={(e) => upd(g.id, "a", e.target.value)}
+                placeholder="–"
+              />
+              <span>{g.away.code} {g.away.flag}</span>
             </div>
             <div className="org-actions">
-              <button className="mini-btn" disabled={!isNum(d.h) || !isNum(d.a)} onClick={() => onSave(g.id, d.h, d.a)}>
+              <button
+                className="mini-btn"
+                disabled={!isNum(d.h) || !isNum(d.a)}
+                onClick={() => onSave(g.id, d.h, d.a)}
+              >
                 <Check size={14} /> {saved ? "Atualizar" : "Lançar"}
               </button>
               {saved && (
                 <button
                   className="mini-btn ghost"
-                  onClick={() => {
-                    upd(g.id, "h", "");
-                    upd(g.id, "a", "");
-                    onSave(g.id, "", "");
-                  }}
+                  onClick={() => { upd(g.id, "h", ""); upd(g.id, "a", ""); onSave(g.id, "", ""); }}
                 >
                   Limpar
                 </button>
               )}
             </div>
+
+            <div className="org-scorer-section">
+              <label className="org-scorer-label">
+                <Zap size={12} /> Goleadores (separar por vírgula se mais de um)
+              </label>
+              <div className="org-scorer-row">
+                <input
+                  className="scorer-input"
+                  type="text"
+                  value={draftScorers[g.id] || ""}
+                  onChange={(e) => setDraftScorers((s) => ({ ...s, [g.id]: e.target.value }))}
+                  placeholder="Ex.: Vinícius Jr., Rodrygo"
+                  style={{ flex: 1 }}
+                />
+                <button
+                  className="mini-btn"
+                  onClick={() => onSaveScorer(g.id, draftScorers[g.id] || "")}
+                >
+                  <Check size={14} /> Salvar
+                </button>
+              </div>
+              {results.scorers?.[g.id]?.length > 0 && (
+                <div className="org-saved-info">
+                  Salvo: {results.scorers[g.id].join(", ")}
+                </div>
+              )}
+            </div>
           </div>
         );
       })}
+
+      {/* Classified */}
+      <div className="org-row">
+        <div className="org-game-label">
+          <Users size={13} style={{ display: "inline", verticalAlign: "middle" }} /> 2 Times classificados do Grupo C
+        </div>
+        <div className="team-chips">
+          {GROUP_TEAMS.map((t) => {
+            const selected = draftClassified.includes(t.code);
+            const atLimit = draftClassified.length >= 2;
+            return (
+              <button
+                key={t.code}
+                className={"team-chip" + (selected ? " selected" : "") + (!selected && atLimit ? " dim" : "")}
+                onClick={() => toggleOfficialClassified(t.code)}
+                disabled={!selected && atLimit}
+                type="button"
+              >
+                {t.flag} {t.name}
+                {selected && <Check size={12} />}
+              </button>
+            );
+          })}
+        </div>
+        <div className="org-actions">
+          <button
+            className="mini-btn"
+            disabled={draftClassified.length !== 2}
+            onClick={() => onSaveClassified(draftClassified)}
+          >
+            <Check size={14} /> {results.classified?.length === 2 ? "Atualizar" : "Lançar"}
+          </button>
+        </div>
+        {results.classified?.length === 3 && (
+          <div className="org-saved-info">
+            Salvo: {results.classified.map((c) => GROUP_TEAMS.find((t) => t.code === c)?.flag + " " + c).join(" · ")}
+          </div>
+        )}
+      </div>
+
+      {/* Brazil total goals */}
+      <div className="org-row">
+        <div className="org-game-label">
+          <Target size={13} style={{ display: "inline", verticalAlign: "middle" }} /> Total de gols do Brasil na fase de grupos
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", justifyContent: "center" }}>
+          <input
+            className="score-in dark"
+            inputMode="numeric"
+            value={draftBrazilGoals}
+            onChange={(e) => setDraftBrazilGoals(e.target.value.replace(/[^0-9]/g, "").slice(0, 2))}
+            placeholder="–"
+          />
+          <span style={{ color: "var(--muted)", fontSize: "14px" }}>gols</span>
+        </div>
+        <div className="org-actions">
+          <button
+            className="mini-btn"
+            disabled={!isNum(draftBrazilGoals)}
+            onClick={() => onSaveBrazilGoals(draftBrazilGoals)}
+          >
+            <Check size={14} /> {isNum(results.brazilGoals) ? "Atualizar" : "Lançar"}
+          </button>
+        </div>
+        {isNum(results.brazilGoals) && (
+          <div className="org-saved-info">Salvo: {results.brazilGoals} gols</div>
+        )}
+      </div>
     </div>
   );
 }
@@ -671,10 +1190,13 @@ const CSS = `
   background:linear-gradient(180deg,#fff,var(--canary));-webkit-background-clip:text;background-clip:text;color:transparent}
 .gate-sub{color:var(--muted);font-size:14px;line-height:1.55;margin:0 0 18px}
 .gate-sub b{color:var(--text)}
-.rules-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:22px}
-.pill{font-size:12px;font-weight:600;padding:7px 12px;border-radius:999px;border:1px solid var(--line2)}
+.rules-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:22px}
+.pill{font-size:11px;font-weight:600;padding:6px 10px;border-radius:999px;border:1px solid var(--line2)}
 .pill.gold{color:var(--canary);background:rgba(255,210,0,.08);border-color:rgba(255,210,0,.3)}
 .pill.grass{color:var(--grass2);background:rgba(34,180,99,.08);border-color:rgba(34,180,99,.3)}
+.pill.blue{color:#7eb8f7;background:rgba(126,184,247,.08);border-color:rgba(126,184,247,.3)}
+.pill.orange{color:#ffab5e;background:rgba(255,171,94,.08);border-color:rgba(255,171,94,.3)}
+.pill.purple{color:#c4a5f7;background:rgba(196,165,247,.08);border-color:rgba(196,165,247,.3)}
 .gate-label{display:block;font-size:12px;color:var(--muted);margin-bottom:7px;font-weight:600}
 .gate-input{display:flex;flex-direction:column;gap:10px}
 .gate-input input{width:100%;min-width:0;background:#071811;border:1px solid var(--line2);color:var(--text);
@@ -693,8 +1215,9 @@ const CSS = `
 .hdr-right{display:flex;align-items:center;gap:10px}
 .hdr-count{font-size:13px;color:var(--muted)}
 .icon-btn{background:var(--pitch2);border:1px solid var(--line);color:var(--muted);
-  width:34px;height:34px;border-radius:10px;display:grid;place-items:center;cursor:pointer}
+  width:34px;height:34px;border-radius:10px;display:grid;place-items:center;cursor:pointer;font-size:16px}
 .icon-btn:active{transform:scale(.94)}
+.logout-btn{color:var(--muted);font-size:18px}
 
 .tabs{display:flex;gap:6px;background:var(--pitch2);border:1px solid var(--line);
   padding:5px;border-radius:14px;margin-bottom:16px}
@@ -712,11 +1235,43 @@ const CSS = `
   background:var(--pitch2);border:1px solid var(--line);padding:10px 12px;border-radius:11px}
 .legend svg{color:var(--canary)}
 
-/* ---- ticket (bilhete de bolão) ---- */
+/* ---- bonus cards (classificados, total gols) ---- */
+.bonus-card{background:var(--pitch2);border:1px solid var(--line);border-radius:14px;padding:14px 16px;
+  display:flex;flex-direction:column;gap:10px}
+.bonus-card.locked{opacity:.85}
+.bonus-head{display:flex;align-items:center;gap:7px;font-weight:700;font-size:13.5px}
+.bonus-head svg{color:var(--canary);flex-shrink:0}
+.bonus-pts{margin-left:auto;font-size:11px;font-weight:700;color:var(--canary);
+  background:rgba(255,210,0,.1);border:1px solid rgba(255,210,0,.25);
+  padding:3px 8px;border-radius:999px;white-space:nowrap}
+.bonus-sub{font-size:12px;color:var(--muted);margin:0;line-height:1.4}
+.bonus-sel{font-size:12.5px;color:var(--text);font-weight:600;background:rgba(255,255,255,.05);
+  border-radius:8px;padding:7px 10px}
+.bonus-sel .muted{color:var(--muted);font-weight:400}
+
+/* ---- team chips ---- */
+.team-chips{display:flex;flex-wrap:wrap;gap:7px}
+.team-chip{display:flex;align-items:center;gap:5px;background:#071811;
+  border:1.5px solid var(--line2);color:var(--text);font-size:13px;font-weight:600;
+  padding:8px 12px;border-radius:10px;cursor:pointer;transition:border-color .15s,background .15s}
+.team-chip:hover:not(:disabled){border-color:var(--canary);background:rgba(255,210,0,.06)}
+.team-chip.selected{border-color:var(--canary);background:rgba(255,210,0,.12);color:var(--canary)}
+.team-chip.selected svg{color:var(--canary)}
+.team-chip.dim{opacity:.4;cursor:not-allowed}
+.team-chip:disabled{cursor:not-allowed}
+
+/* ---- goals input ---- */
+.goals-row{display:flex;align-items:center;gap:10px;justify-content:center;padding:4px 0}
+.goals-locked{display:flex;align-items:center;gap:8px;justify-content:center}
+.goals-num{font-family:'Anton',sans-serif;font-size:32px;color:var(--canary);letter-spacing:.02em}
+.goals-label{font-size:14px;color:var(--muted);font-weight:600}
+
+/* ---- ticket ---- */
 .ticket{background:linear-gradient(180deg,var(--paper),var(--paper2));color:var(--ink);
   border-radius:14px;padding:14px 16px 0;position:relative;
   box-shadow:0 14px 30px rgba(0,0,0,.35)}
 .ticket.locked{filter:saturate(.85)}
+.ticket.unavailable{filter:saturate(.5);opacity:.7}
 .ticket-top{display:flex;justify-content:space-between;align-items:center}
 .ticket-group{font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-soft)}
 .ticket-when{font-size:12px;font-weight:700;color:var(--ink)}
@@ -724,8 +1279,9 @@ const CSS = `
   padding:3px 9px;border-radius:999px}
 .status.live{background:#ffe3df;color:#c0341d}
 .status.done{background:#173322;color:#d6f3e0}
+.status.waiting{background:rgba(134,162,147,.12);color:var(--muted)}
 
-.match{display:flex;align-items:center;justify-content:center;gap:10px;padding:16px 0 14px}
+.match{display:flex;align-items:center;justify-content:center;gap:10px;padding:16px 0 10px}
 .team{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:64px}
 .team .flag{font-size:30px;line-height:1}
 .team .code{font-family:'Anton',sans-serif;font-size:18px;letter-spacing:.04em}
@@ -737,6 +1293,28 @@ const CSS = `
 .score-in:disabled{background:#e3d7b3;color:var(--ink-soft);border-color:var(--ink-soft);opacity:.9}
 .score-in::placeholder{color:#b9a978}
 .x{font-family:'Anton',sans-serif;font-size:18px;color:var(--ink-soft)}
+
+/* ---- scorer section (inside ticket) ---- */
+.scorer-section{padding:8px 0 10px;border-top:1px dashed rgba(23,51,34,.18);
+  display:flex;flex-direction:column;gap:8px}
+.scorer-section-head{display:flex;align-items:center;gap:6px}
+.scorer-icon{color:var(--ink-soft);flex-shrink:0}
+.scorer-label{font-size:11.5px;font-weight:700;color:var(--ink-soft)}
+.scorer-inputs{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px}
+.scorer-input{min-width:0;background:rgba(255,255,255,.5);border:1.5px solid rgba(23,51,34,.25);
+  color:var(--ink);padding:6px 7px;border-radius:8px;font-size:12px;outline:none;width:100%}
+.scorer-input:focus{border-color:var(--canary2);background:#fff}
+.scorer-input::placeholder{color:rgba(23,51,34,.35);font-size:11px}
+.scorer-pts-badge{font-size:11px;font-weight:800;color:var(--canary2);
+  background:rgba(231,182,0,.15);border:1px solid rgba(231,182,0,.3);
+  padding:3px 7px;border-radius:999px;white-space:nowrap;flex-shrink:0;margin-left:auto}
+.scorer-badge{font-size:11px;font-weight:800;padding:2px 7px;border-radius:999px;margin-left:auto}
+.scorer-badge.hit{background:rgba(34,180,99,.18);color:#147a41}
+.scorer-badge.miss{background:rgba(0,0,0,.08);color:var(--ink-soft)}
+.scorer-chip{font-size:12px;font-weight:600;padding:5px 8px;border-radius:8px;text-align:center}
+.scorer-chip.hit{background:rgba(34,180,99,.18);color:#147a41}
+.scorer-chip.miss{background:rgba(0,0,0,.08);color:var(--ink-soft)}
+.scorer-chip.empty{color:rgba(23,51,34,.35)}
 
 .tear{position:relative;border-top:2px dashed rgba(23,51,34,.28);margin:0 -16px}
 .notch{position:absolute;top:-9px;width:18px;height:18px;border-radius:50%;background:var(--pitch)}
@@ -774,19 +1352,37 @@ const CSS = `
 .crav{color:var(--canary);font-weight:700}
 .rpts{font-family:'Anton',sans-serif;font-size:22px;text-align:right;color:var(--canary)}
 
+/* ---- reveal ---- */
 .reveal{background:var(--pitch2);border:1px solid var(--line);border-radius:14px;padding:12px 14px}
 .reveal-head{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px;
   padding-bottom:9px;margin-bottom:6px;border-bottom:1px solid var(--line)}
 .reveal-head svg{color:var(--canary)}
 .reveal-tag{margin-left:auto;font-size:10px;letter-spacing:.1em;text-transform:uppercase;
   color:var(--muted);font-weight:700}
+.reveal-extra{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted);
+  padding:4px 0 8px;border-bottom:1px solid var(--line);margin-bottom:4px}
+.reveal-extra svg{color:var(--canary);flex-shrink:0}
+.reveal-extra b{color:var(--text)}
 .reveal-empty{font-size:13px;color:var(--muted);padding:4px 0}
-.pick{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:12px;padding:7px 0}
-.pk-name{font-size:14px}
-.pk-guess{font-family:'Anton',sans-serif;font-size:16px;color:var(--text);letter-spacing:.03em}
-.pk-pts{font-size:12px;font-weight:800;padding:3px 9px;border-radius:999px;min-width:42px;text-align:center}
-.pk-pts.p2{background:rgba(255,210,0,.16);color:var(--canary)}
-.pk-pts.p1{background:rgba(34,180,99,.16);color:var(--grass2)}
+
+.pick{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:10px;padding:7px 0;
+  border-bottom:1px solid rgba(255,255,255,.04)}
+.pick:last-child{border-bottom:none}
+.pk-info{display:flex;flex-direction:column;gap:2px;min-width:0}
+.pk-name{font-size:14px;font-weight:600}
+.pk-scorer{display:flex;align-items:center;flex-wrap:wrap;gap:4px;font-size:11.5px;color:var(--muted)}
+.pk-scorer svg{color:var(--canary);flex-shrink:0}
+.pk-scorer-name{padding:1px 5px;border-radius:5px;font-size:11px}
+.pk-scorer-name.hit{background:rgba(34,180,99,.15);color:var(--grass2);font-weight:700}
+.pk-scorer-name.miss{background:rgba(255,255,255,.06);color:var(--muted);text-decoration:line-through}
+.pk-scorer-badge{font-size:10px;font-weight:800;padding:2px 6px;border-radius:999px;margin-left:2px}
+.pk-scorer-badge.hit{background:rgba(34,180,99,.15);color:var(--grass2)}
+.pk-scorer-badge.miss{background:rgba(255,255,255,.06);color:var(--muted)}
+.pk-guess{font-family:'Anton',sans-serif;font-size:16px;color:var(--text);letter-spacing:.03em;white-space:nowrap}
+.pk-pts{font-size:12px;font-weight:800;padding:3px 9px;border-radius:999px;min-width:42px;text-align:center;white-space:nowrap}
+.pk-pts.p3{background:rgba(255,210,0,.16);color:var(--canary)}
+.pk-pts.p2{background:rgba(34,180,99,.16);color:var(--grass2)}
+.pk-pts.p1{background:rgba(34,180,99,.09);color:var(--grass)}
 .pk-pts.p0{background:rgba(255,255,255,.06);color:var(--muted)}
 
 /* ---- organizador ---- */
@@ -803,8 +1399,10 @@ const CSS = `
   padding:13px 18px;border-radius:11px;font-size:15px;cursor:pointer}
 .code-input button:disabled{opacity:.4;cursor:not-allowed}
 .code-err{color:#ff7a63;font-size:13px;font-weight:600;margin-top:2px}
+
 .org-row{background:var(--pitch2);border:1px solid var(--line);border-radius:14px;padding:14px;
   display:flex;flex-direction:column;gap:12px}
+.org-game-label{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
 .org-match{display:flex;align-items:center;justify-content:center;gap:10px;font-family:'Anton',sans-serif;
   font-size:16px;letter-spacing:.03em}
 .score-in.dark{width:42px;height:46px;font-size:22px;background:#071811;color:var(--text);
@@ -817,6 +1415,13 @@ const CSS = `
 .mini-btn:disabled{opacity:.4;cursor:not-allowed}
 .mini-btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line2)}
 
+.org-scorer-section{display:flex;flex-direction:column;gap:7px;
+  padding-top:10px;border-top:1px solid var(--line)}
+.org-scorer-label{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);font-weight:600}
+.org-scorer-label svg{color:var(--canary)}
+.org-scorer-row{display:flex;gap:8px;align-items:center}
+.org-saved-info{font-size:12px;color:var(--grass);font-weight:600}
+
 /* ---- toast ---- */
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
   background:var(--canary);color:#1a1300;font-weight:700;font-size:13.5px;
@@ -827,5 +1432,6 @@ const CSS = `
   .gate-title{font-size:46px}
   .team{min-width:54px}
   .score-in{width:42px}
+  .team-chip{font-size:12px;padding:7px 10px}
 }
 `;
