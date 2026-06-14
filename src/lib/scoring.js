@@ -18,13 +18,21 @@ export const toScorerArray = (v) => {
   return ["", "", ""];
 };
 
-// Placar exato → +3 | Resultado certo → +2 | Errou → 0
+// Converte {bra,opp} (novo formato) ou string[] (legado) em lista plana de nomes não-vazios
+export const flattenScorers = (v) => {
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    return [...(v.bra || []), ...(v.opp || [])].filter(Boolean);
+  }
+  return toScorerArray(v).filter(Boolean);
+};
+
+// Placar exato → +3 | Vitória/derrota certa → +2 | Empate só vale exato | Errou → 0
 export function pointsFor(pred, res) {
   if (!pred || !res) return null;
   if (!isNum(pred.h) || !isNum(pred.a) || !isNum(res.h) || !isNum(res.a)) return null;
   const ph = +pred.h, pa = +pred.a, rh = +res.h, ra = +res.a;
   if (ph === rh && pa === ra) return 3;
-  if (Math.sign(ph - pa) === Math.sign(rh - ra)) return 2;
+  if (rh !== ra && Math.sign(ph - pa) === Math.sign(rh - ra)) return 2;
   return 0;
 }
 
@@ -44,13 +52,37 @@ export function pointsForBrazilGoals(pred, official) {
   return 0;
 }
 
-// 3 goleadores: conta quantos dos 3 palpitados realmente marcaram
+// Acertou qualquer goleador da lista → +2 (flat, independente de quantos acertou)
 export function pointsForScorer(predArray, officialList) {
   if (!predArray || !officialList || officialList.length === 0) return null;
   const preds = (Array.isArray(predArray) ? predArray : [predArray])
     .filter(Boolean).map(normStr);
   if (preds.length === 0) return null;
-  return preds.filter((p) => officialList.some((o) => normStr(o) === p)).length;
+  return preds.some((p) => officialList.some((o) => normStr(o) === p)) ? 2 : 0;
+}
+
+// Pontua goleadores por equipe: +2 se qualquer pick do Brasil acertou +
+//                               +2 se qualquer pick do adversário acertou (máx +4)
+// Suporta formato legado (array plano → tratado como picks do Brasil)
+export function calcScorerPoints(scorerObj, officialList) {
+  if (!officialList || officialList.length === 0) return null;
+
+  let bra, opp;
+  if (scorerObj && typeof scorerObj === "object" && !Array.isArray(scorerObj)) {
+    bra = (scorerObj.bra || []).filter(Boolean);
+    opp = (scorerObj.opp || []).filter(Boolean);
+  } else {
+    bra = toScorerArray(scorerObj).filter(Boolean);
+    opp = [];
+  }
+
+  if (bra.length === 0 && opp.length === 0) return null;
+
+  const officials = officialList.map(normStr);
+  let pts = 0;
+  if (bra.length > 0 && bra.map(normStr).some((p) => officials.includes(p))) pts += 2;
+  if (opp.length > 0 && opp.map(normStr).some((p) => officials.includes(p))) pts += 2;
+  return pts;
 }
 
 export function gameLocked(game, results) {
@@ -89,7 +121,7 @@ export function calcStandings(players, results, games) {
 
       const officialScorers = results.scorers?.[g.id];
       if (officialScorers) {
-        const sp = pointsForScorer(p.scorers?.[g.id], officialScorers);
+        const sp = calcScorerPoints(p.scorers?.[g.id], officialScorers);
         if (sp !== null) { pts += sp; gamePts += sp; }
       }
 

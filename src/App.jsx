@@ -3,7 +3,7 @@ import { Lock, Trophy, Ticket, Settings, Check, Eye, EyeOff, RefreshCw, Crown, T
 import { createClient } from "@supabase/supabase-js";
 import {
   slug, isNum, normStr, toScorerArray,
-  pointsFor, pointsForClassified, pointsForBrazilGoals, pointsForScorer,
+  pointsFor, pointsForClassified, pointsForBrazilGoals, calcScorerPoints,
   gameLocked, prevGameFinished, calcStandings,
 } from "./lib/scoring.js";
 
@@ -49,6 +49,77 @@ const GROUP_TEAMS = [
   { code: "HAI", name: "Haiti", flag: "🇭🇹" },
   { code: "ESC", name: "Escócia", flag: "🏴󠁧󠁢󠁳󠁣󠁴󠁿" },
 ];
+
+// Elenco convocado do Brasil para a Copa do Mundo 2026 (Ancelotti, maio/2026)
+const COPA_PLAYERS = [
+  "Alisson", "Éderson", "Weverton",
+  "Marquinhos", "Bremer", "Gabriel Magalhães", "Ibañez", "Léo Pereira",
+  "Alex Sandro", "Danilo", "Douglas Santos", "Wesley",
+  "Casemiro", "Bruno Guimarães", "Lucas Paquetá", "Fabinho",
+  "Vinícius Júnior", "Neymar", "Raphinha", "Endrick", "Gabriel Martinelli",
+  "Igor Thiago", "Luiz Henrique", "Matheus Cunha", "Rayan",
+];
+
+// Mapa de aliases (chave = normStr do nome antigo) → nome canônico do COPA_PLAYERS
+const SCORER_ALIASES = {
+  "vini": "Vinícius Júnior",
+  "vini jr": "Vinícius Júnior",
+  "vini jr.": "Vinícius Júnior",
+  "vinicius": "Vinícius Júnior",
+  "vinicius jr": "Vinícius Júnior",
+  "vinicius jr.": "Vinícius Júnior",
+  "paqueta": "Lucas Paquetá",
+  "lucas paqueta": "Lucas Paquetá",
+  "bruno": "Bruno Guimarães",
+  "bruno guimaraes": "Bruno Guimarães",
+  "gabriel magalhaes": "Gabriel Magalhães",
+  "magalhaes": "Gabriel Magalhães",
+  "martinelli": "Gabriel Martinelli",
+  "gabriel martinelli": "Gabriel Martinelli",
+  "ederson": "Éderson",
+  "leo pereira": "Léo Pereira",
+  "ibanez": "Ibañez",
+};
+
+// Elencos dos adversários do Brasil no Grupo C
+const MARROCOS_PLAYERS = [
+  "Achraf Hakimi", "Noussair Mazraoui", "Nayef Aguerd", "Chadi Riad", "Issa Diop",
+  "Zakaria El Ouahdi", "Anass Salah-Eddine", "Youssef Belammari", "Redouane Halhal",
+  "Sofyan Amrabat", "Azzedine Ounahi", "Bilal El Khannouss", "Ismael Saibari",
+  "Neil El Aynaoui", "Ayyoub Bouaddi", "Samir El Mourabet",
+  "Brahim Diaz", "Abde Ezzalzouli", "Soufiane Rahimi", "Ayoub El Kaabi", "Chemsdine Talbi",
+];
+
+const HAITI_PLAYERS = [
+  "Carlens Arcus", "Jean-Kevin Duverne", "Wilguens Paugain", "Hannes Delcroix",
+  "Duke Lacroix", "Ricardo Adé", "Keeto Thermoncy",
+  "Jean-Ricner Bellegarde", "Leverton Pierre", "Carl-Fred Sainthe",
+  "Jean-Jacques Danley", "Woodensky Pierre", "Dominique Simon",
+  "Wilson Isidor", "Duckens Nazon", "Derrick Etienne", "Frantzdy Pierrot",
+  "Ruben Providence", "Lenny Joseph", "Yassin Fortune",
+];
+
+const ESCOCIA_PLAYERS = [
+  "Andy Robertson", "Grant Hanley", "Jack Hendry", "Aaron Hickey", "Dom Hyam",
+  "Scott McKenna", "Nathan Patterson", "Anthony Ralston", "John Souttar", "Kieran Tierney",
+  "Ryan Christie", "Lewis Ferguson", "John McGinn", "Kenny McLean", "Scott McTominay",
+  "Ben Gannon-Doak", "Tyler Fletcher", "Findlay Curtis",
+  "Ché Adams", "Lyndon Dykes", "George Hirst", "Lawrence Shankland", "Ross Stewart",
+];
+
+// Jogadores disponíveis para palpitar por jogo (Brasil + adversário, para o admin)
+const GAME_PLAYERS = {
+  g1: [...COPA_PLAYERS, ...MARROCOS_PLAYERS],
+  g2: [...COPA_PLAYERS, ...HAITI_PLAYERS],
+  g3: [...ESCOCIA_PLAYERS, ...COPA_PLAYERS],
+};
+
+// Adversários por jogo (para select separado no Palpites)
+const OPPONENT_PLAYERS = {
+  g1: MARROCOS_PLAYERS,
+  g2: HAITI_PLAYERS,
+  g3: ESCOCIA_PLAYERS,
+};
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -97,7 +168,7 @@ export default function App() {
   const [myScores, setMyScores] = useState({});
   const [myClassified, setMyClassified] = useState([]);
   const [myBrazilGoals, setMyBrazilGoals] = useState("");
-  const [myScorers, setMyScorers] = useState({ g1: ["", "", ""], g2: ["", "", ""], g3: ["", "", ""] });
+  const [myScorers, setMyScorers] = useState({ g1: { bra: [], opp: [] }, g2: { bra: [], opp: [] }, g3: { bra: [], opp: [] } });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
@@ -131,6 +202,12 @@ export default function App() {
     return { ps, res };
   }, []);
 
+  const toScorerObj = (v) => {
+    if (v && typeof v === "object" && !Array.isArray(v)) return v;
+    const arr = Array.isArray(v) ? v.filter(Boolean) : v ? [v] : [];
+    return { bra: arr, opp: [] };
+  };
+
   const loginAs = useCallback((id, name, ps) => {
     const mine = ps.find((p) => p.id === id);
     const start = {};
@@ -141,9 +218,9 @@ export default function App() {
     setMyClassified(mine?.classified || []);
     setMyBrazilGoals(mine?.brazilGoals !== undefined ? String(mine.brazilGoals) : "");
     setMyScorers({
-      g1: toScorerArray(mine?.scorers?.g1),
-      g2: toScorerArray(mine?.scorers?.g2),
-      g3: toScorerArray(mine?.scorers?.g3),
+      g1: toScorerObj(mine?.scorers?.g1),
+      g2: toScorerObj(mine?.scorers?.g2),
+      g3: toScorerObj(mine?.scorers?.g3),
     });
     setMe({ id, name: mine?.name || name });
   }, []);
@@ -314,9 +391,20 @@ export default function App() {
     GAMES.forEach((g, i) => {
       const { locked } = gameLocked(g, results);
       const open = prevGameFinishedLocal(i, results);
-      const arr = myScorers[g.id] || [];
-      if (!locked && open && arr.some((s) => s.trim())) {
-        scorers[g.id] = arr.map((s) => s.trim());
+      if (locked || !open) return;
+
+      const braIsHome = g.home.code === "BRA";
+      const pred = myScores[g.id] || {};
+      const braGoals = isNum(pred.h) && isNum(pred.a) ? (braIsHome ? +pred.h : +pred.a) : 0;
+      const oppGoals = isNum(pred.h) && isNum(pred.a) ? (braIsHome ? +pred.a : +pred.h) : 0;
+
+      const obj = myScorers[g.id] || { bra: [], opp: [] };
+      const bra = (obj.bra || []).slice(0, braGoals).map((s) => s.trim());
+      const opp = (obj.opp || []).slice(0, oppGoals).map((s) => s.trim());
+      if (bra.some(Boolean) || opp.some(Boolean)) {
+        scorers[g.id] = { bra, opp };
+      } else {
+        delete scorers[g.id];
       }
     });
 
@@ -366,10 +454,10 @@ export default function App() {
     flash("Total de gols salvo!");
   };
 
-  const saveOfficialScorer = async (gid, scorerStr) => {
+  const saveOfficialScorer = async (gid, scorerArr) => {
     const scorers = results.scorers ? { ...results.scorers } : {};
-    if (scorerStr.trim()) {
-      scorers[gid] = scorerStr.split(",").map((s) => s.trim()).filter(Boolean);
+    if (scorerArr.length > 0) {
+      scorers[gid] = scorerArr;
     } else {
       delete scorers[gid];
     }
@@ -377,6 +465,40 @@ export default function App() {
     setResults(next);
     await store.set("results", JSON.stringify(next));
     flash("Goleadores salvos!");
+  };
+
+  const migratePlayerNames = async () => {
+    const { keys } = await store.list("pred:");
+    let count = 0;
+    for (const k of keys) {
+      const r = await store.get(k);
+      if (!r?.value) continue;
+      const p = JSON.parse(r.value);
+      let changed = false;
+      const newScorers = {};
+      const migrate = (name) => {
+        const canonical = SCORER_ALIASES[normStr(name)];
+        if (canonical && canonical !== name) { changed = true; count++; return canonical; }
+        return name;
+      };
+      for (const gid of Object.keys(p.scorers || {})) {
+        const entry = p.scorers[gid];
+        if (!entry) continue;
+        if (Array.isArray(entry)) {
+          newScorers[gid] = entry.map(migrate);
+        } else if (typeof entry === "object") {
+          newScorers[gid] = {
+            bra: (entry.bra || []).map(migrate),
+            opp: (entry.opp || []).map(migrate),
+          };
+        }
+      }
+      if (changed) {
+        await store.set(k, JSON.stringify({ ...p, scorers: newScorers }));
+      }
+    }
+    await loadAll();
+    flash(`Migração concluída — ${count} nome(s) corrigido(s).`);
   };
 
   /* standings */
@@ -456,6 +578,7 @@ export default function App() {
               onSaveClassified={saveOfficialClassified}
               onSaveBrazilGoals={saveOfficialBrazilGoals}
               onSaveScorer={saveOfficialScorer}
+              onMigrate={migratePlayerNames}
               unlocked={orgUnlocked}
               setUnlocked={setOrgUnlocked}
             />
@@ -660,13 +783,19 @@ function Palpites({ myScores, setMyScore, myClassified, toggleClassified, myBraz
         const prevDone = prevGameFinishedLocal(gi, results);
         const unavailable = !prevDone && !locked; // previous game not done yet
         const effectiveLocked = locked || unavailable;
+        const msUntilKickoff = new Date(g.kickoff).getTime() - Date.now();
+        const closingSoon = !locked && !unavailable && msUntilKickoff > 0 && msUntilKickoff < 2 * 3600 * 1000;
         const res = results[g.id];
         const cur = myScores[g.id] || { h: "", a: "" };
         const others = players.filter((p) => p.id !== me.id && p.scores?.[g.id]).length;
         const officialScorers = results.scorers?.[g.id] || [];
-        const myScorer = toScorerArray(myScorers[g.id]);
+        const myScorer = myScorers[g.id] || { bra: [], opp: [] };
+        const braIsHome = g.home.code === "BRA";
+        const braGoals = isNum(cur.h) && isNum(cur.a) ? (braIsHome ? +cur.h : +cur.a) : 0;
+        const oppGoals = isNum(cur.h) && isNum(cur.a) ? (braIsHome ? +cur.a : +cur.h) : 0;
+        const oppTeam = braIsHome ? g.away : g.home;
         const scorerResult = finished && officialScorers.length > 0
-          ? pointsForScorer(myScorer, officialScorers)
+          ? calcScorerPoints(myScorer, officialScorers)
           : null;
 
         return (
@@ -678,6 +807,12 @@ function Palpites({ myScores, setMyScore, myClassified, toggleClassified, myBraz
               ) : locked ? (
                 <span className={"status " + (finished ? "done" : "live")}>
                   {finished ? "Encerrado" : "Bola rolando"}
+                </span>
+              ) : closingSoon ? (
+                <span className="status warning">
+                  ⏰ Fecha em {msUntilKickoff < 3600000
+                    ? `${Math.ceil(msUntilKickoff / 60000)}min`
+                    : `${Math.floor(msUntilKickoff / 3600000)}h${Math.ceil((msUntilKickoff % 3600000) / 60000)}min`}
                 </span>
               ) : (
                 <span className="ticket-when">{g.when}</span>
@@ -710,43 +845,91 @@ function Palpites({ myScores, setMyScore, myClassified, toggleClassified, myBraz
               <Team t={g.away} right />
             </div>
 
-            {/* Scorers (3 players) */}
+            {/* Scorers — slots dinâmicos baseados no placar previsto */}
             <div className="scorer-section">
               <div className="scorer-section-head">
                 <Zap size={13} className="scorer-icon" />
-                <span className="scorer-label">Quem vai marcar gol?</span>
-                {!effectiveLocked && <span className="scorer-pts-badge">+1 · +2 · +3</span>}
+                <span className="scorer-label">Goleadores</span>
+                {!effectiveLocked && <span className="scorer-pts-badge">+2</span>}
                 {scorerResult !== null && (
                   <span className={"scorer-badge " + (scorerResult > 0 ? "hit" : "miss")}>
                     {scorerResult > 0 ? `+${scorerResult}` : "0"}
                   </span>
                 )}
               </div>
-              <div className="scorer-inputs">
-                {[0, 1, 2].map((idx) => (
-                  effectiveLocked ? (
-                    <span key={idx} className={"scorer-chip" + (
-                      scorerResult !== null && myScorer[idx] && officialScorers.some(o => normStr(o) === normStr(myScorer[idx]))
-                        ? " hit" : (myScorer[idx] ? " miss" : " empty")
-                    )}>
-                      {unavailable ? "—" : myScorer[idx] || "—"}
+
+              {/* Slots do Brasil — um por gol do Brasil previsto */}
+              {Array.from({ length: braGoals }, (_, i) => {
+                const name = myScorer.bra?.[i] || "";
+                const chipClass = scorerResult !== null
+                  ? (name && officialScorers.some(o => normStr(o) === normStr(name)) ? " hit" : (name ? " miss" : " empty"))
+                  : (name ? "" : " empty");
+                return (
+                  <div key={`bra-${i}`} className="scorer-team-row">
+                    <span className="scorer-team-label">
+                      🇧🇷 No Brasil{braGoals > 1 ? ` #${i + 1}` : ""}
                     </span>
-                  ) : (
-                    <input
-                      key={idx}
-                      className="scorer-input"
-                      type="text"
-                      value={myScorer[idx] || ""}
-                      onChange={(e) => setMyScorers((s) => ({
-                        ...s,
-                        [g.id]: s[g.id].map((v, i) => i === idx ? e.target.value : v),
-                      }))}
-                      placeholder={`Jogador ${idx + 1}`}
-                      maxLength={40}
-                    />
-                  )
-                ))}
-              </div>
+                    {effectiveLocked ? (
+                      <span className={"scorer-chip" + chipClass}>
+                        {unavailable || !name ? "✕" : name}
+                      </span>
+                    ) : (
+                      <select
+                        className="scorer-input"
+                        value={name}
+                        onChange={(e) => {
+                          const next = Array.from({ length: braGoals }, (_, j) => myScorer.bra?.[j] || "");
+                          next[i] = e.target.value;
+                          setMyScorers((s) => ({ ...s, [g.id]: { ...s[g.id], bra: next } }));
+                        }}
+                      >
+                        <option value="">— opcional —</option>
+                        {COPA_PLAYERS.map((p) => <option key={p} value={p}>{p}</option>)}
+                      </select>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Slots do adversário — um por gol do adversário previsto */}
+              {Array.from({ length: oppGoals }, (_, i) => {
+                const name = myScorer.opp?.[i] || "";
+                const chipClass = scorerResult !== null
+                  ? (name && officialScorers.some(o => normStr(o) === normStr(name)) ? " hit" : (name ? " miss" : " empty"))
+                  : (name ? "" : " empty");
+                return (
+                  <div key={`opp-${i}`} className="scorer-team-row">
+                    <span className="scorer-team-label">
+                      {oppTeam.flag} No {oppTeam.name}{oppGoals > 1 ? ` #${i + 1}` : ""}
+                    </span>
+                    {effectiveLocked ? (
+                      <span className={"scorer-chip" + chipClass}>
+                        {unavailable || !name ? "✕" : name}
+                      </span>
+                    ) : (
+                      <select
+                        className="scorer-input"
+                        value={name}
+                        onChange={(e) => {
+                          const next = Array.from({ length: oppGoals }, (_, j) => myScorer.opp?.[j] || "");
+                          next[i] = e.target.value;
+                          setMyScorers((s) => ({ ...s, [g.id]: { ...s[g.id], opp: next } }));
+                        }}
+                      >
+                        <option value="">— opcional —</option>
+                        {OPPONENT_PLAYERS[g.id].map((p) => <option key={p} value={p}>{p}</option>)}
+                      </select>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Placeholder quando placar não prevê gols */}
+              {braGoals === 0 && oppGoals === 0 && !effectiveLocked && (
+                <p className="scorer-placeholder">
+                  {isNum(cur.h) ? "Nenhum gol previsto." : "Preencha o placar para escolher goleadores."}
+                </p>
+              )}
             </div>
 
             <div className="tear">
@@ -864,18 +1047,25 @@ function Tabela({ standings, finishedGames, players, results, me }) {
         const finished = res && isNum(res.h) && isNum(res.a);
         const officialScorers = results.scorers?.[g.id] || [];
 
+        const revBraIsHome = g.home.code === "BRA";
+        const revOppTeam = revBraIsHome ? g.away : g.home;
+
         const picks = players
           .filter((p) => p.scores?.[g.id])
           .map((p) => {
-            const scorerArr = toScorerArray(p.scorers?.[g.id]);
+            const scorerObj = p.scorers?.[g.id];
+            const scorerNorm = scorerObj && typeof scorerObj === "object" && !Array.isArray(scorerObj)
+              ? scorerObj
+              : { bra: toScorerArray(scorerObj).filter(Boolean), opp: [] };
             return {
               id: p.id,
               name: p.name,
               score: p.scores[g.id],
               pts: finished ? pointsFor(p.scores[g.id], res) : null,
-              scorerArr,
+              braNames: (scorerNorm.bra || []).filter(Boolean),
+              oppNames: (scorerNorm.opp || []).filter(Boolean),
               scorerPts: (finished && officialScorers.length > 0)
-                ? pointsForScorer(scorerArr, officialScorers)
+                ? calcScorerPoints(scorerNorm, officialScorers)
                 : null,
             };
           })
@@ -906,14 +1096,22 @@ function Tabela({ standings, finishedGames, players, results, me }) {
                 <div className="pick" key={pk.id}>
                   <div className="pk-info">
                     <span className="pk-name">{pk.name}</span>
-                    {pk.scorerArr.some(Boolean) && (
+                    {(pk.braNames.length > 0 || pk.oppNames.length > 0) && (
                       <span className="pk-scorer">
                         <Zap size={11} />
-                        {pk.scorerArr.filter(Boolean).map((s, i) => {
+                        {pk.braNames.map((s, i) => {
                           const hit = finished && officialScorers.some(o => normStr(o) === normStr(s));
                           return (
-                            <span key={i} className={"pk-scorer-name " + (finished ? (hit ? "hit" : "miss") : "")}>
-                              {s}
+                            <span key={`b${i}`} className={"pk-scorer-name " + (finished ? (hit ? "hit" : "miss") : "")}>
+                              🇧🇷 {s}
+                            </span>
+                          );
+                        })}
+                        {pk.oppNames.map((s, i) => {
+                          const hit = finished && officialScorers.some(o => normStr(o) === normStr(s));
+                          return (
+                            <span key={`o${i}`} className={"pk-scorer-name " + (finished ? (hit ? "hit" : "miss") : "")}>
+                              {revOppTeam.flag} {s}
                             </span>
                           );
                         })}
@@ -926,11 +1124,16 @@ function Tabela({ standings, finishedGames, players, results, me }) {
                     )}
                   </div>
                   <span className="pk-guess">{pk.score.h}–{pk.score.a}</span>
-                  {finished && (
-                    <span className={"pk-pts p" + pk.pts}>
-                      {pk.pts === 3 ? "+3 ⚡" : pk.pts === 2 ? "+2" : "0"}
-                    </span>
-                  )}
+                  {finished && (() => {
+                    const total = (pk.pts ?? 0) + (pk.scorerPts ?? 0);
+                    return (
+                      <span className={"pk-pts p" + Math.min(total, 3)}>
+                        {total > 0
+                          ? (pk.pts === 3 ? `+${total} ⚡` : `+${total}`)
+                          : "0"}
+                      </span>
+                    );
+                  })()}
                 </div>
               ))
             )}
@@ -1008,7 +1211,7 @@ function Tabela({ standings, finishedGames, players, results, me }) {
 }
 
 /* --------------------------- Organizador --------------------------- */
-function Organizador({ results, onSave, onSaveClassified, onSaveBrazilGoals, onSaveScorer, unlocked, setUnlocked }) {
+function Organizador({ results, onSave, onSaveClassified, onSaveBrazilGoals, onSaveScorer, onMigrate, unlocked, setUnlocked }) {
   const [draft, setDraft] = useState(() => {
     const d = {};
     GAMES.forEach((g) => {
@@ -1025,9 +1228,7 @@ function Organizador({ results, onSave, onSaveClassified, onSaveBrazilGoals, onS
   );
   const [draftScorers, setDraftScorers] = useState(() => {
     const s = {};
-    GAMES.forEach((g) => {
-      s[g.id] = results.scorers?.[g.id]?.join(", ") || "";
-    });
+    GAMES.forEach((g) => { s[g.id] = results.scorers?.[g.id] || []; });
     return s;
   });
 
@@ -1137,22 +1338,36 @@ function Organizador({ results, onSave, onSaveClassified, onSaveBrazilGoals, onS
 
             <div className="org-scorer-section">
               <label className="org-scorer-label">
-                <Zap size={12} /> Goleadores (separar por vírgula se mais de um)
+                <Zap size={12} /> Goleadores
               </label>
-              <div className="org-scorer-row">
-                <input
-                  className="scorer-input"
-                  type="text"
-                  value={draftScorers[g.id] || ""}
-                  onChange={(e) => setDraftScorers((s) => ({ ...s, [g.id]: e.target.value }))}
-                  placeholder="Ex.: Vinícius Jr., Rodrygo"
-                  style={{ flex: 1 }}
-                />
+              <div className="org-scorer-checkboxes">
+                {GAME_PLAYERS[g.id].map((p) => {
+                  const checked = (draftScorers[g.id] || []).includes(p);
+                  return (
+                    <label key={p} className="org-scorer-check">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() =>
+                          setDraftScorers((s) => ({
+                            ...s,
+                            [g.id]: checked
+                              ? (s[g.id] || []).filter((n) => n !== p)
+                              : [...(s[g.id] || []), p],
+                          }))
+                        }
+                      />
+                      {p}
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="org-actions">
                 <button
                   className="mini-btn"
-                  onClick={() => onSaveScorer(g.id, draftScorers[g.id] || "")}
+                  onClick={() => onSaveScorer(g.id, draftScorers[g.id] || [])}
                 >
-                  <Check size={14} /> Salvar
+                  <Check size={14} /> Salvar goleadores
                 </button>
               </div>
               {results.scorers?.[g.id]?.length > 0 && (
@@ -1231,6 +1446,20 @@ function Organizador({ results, onSave, onSaveClassified, onSaveBrazilGoals, onS
         {isNum(results.brazilGoals) && (
           <div className="org-saved-info">Salvo: {results.brazilGoals} gols</div>
         )}
+      </div>
+
+      {/* Migração de dados */}
+      <div className="org-row">
+        <div className="org-game-label">⚙️ Manutenção de dados</div>
+        <p className="org-sub" style={{ fontSize: 13 }}>
+          Atualiza nomes antigos de goleadores nos palpites (ex.: "Vini Jr." → "Vinícius Júnior").
+          Rode uma vez para ajustar as pontuações.
+        </p>
+        <div className="org-actions">
+          <button className="mini-btn ghost" onClick={onMigrate}>
+            Migrar nomes antigos
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1575,6 +1804,7 @@ const CSS = `
 .status.live{background:#ffe3df;color:#c0341d}
 .status.done{background:#173322;color:#d6f3e0}
 .status.waiting{background:rgba(134,162,147,.12);color:var(--muted)}
+.status.warning{background:#fff3cd;color:#856404}
 
 .match{display:flex;align-items:center;justify-content:center;gap:10px;padding:16px 0 10px}
 .team{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:64px}
@@ -1609,7 +1839,7 @@ const CSS = `
 .scorer-chip{font-size:12px;font-weight:600;padding:5px 8px;border-radius:8px;text-align:center}
 .scorer-chip.hit{background:rgba(34,180,99,.18);color:#147a41}
 .scorer-chip.miss{background:rgba(0,0,0,.08);color:var(--ink-soft)}
-.scorer-chip.empty{color:rgba(23,51,34,.35)}
+.scorer-chip.empty{color:#c0392b;opacity:.7;background:none;border:none}
 
 .tear{position:relative;border-top:2px dashed rgba(23,51,34,.28);margin:0 -16px}
 .notch{position:absolute;top:-9px;width:18px;height:18px;border-radius:50%;background:var(--pitch)}
@@ -1723,6 +1953,12 @@ const CSS = `
 .org-scorer-label{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);font-weight:600}
 .org-scorer-label svg{color:var(--canary)}
 .org-scorer-row{display:flex;gap:8px;align-items:center}
+.scorer-team-row{display:flex;align-items:center;gap:8px;padding:2px 0}
+.scorer-team-label{font-size:12px;font-weight:600;color:var(--muted);white-space:nowrap;min-width:110px}
+.scorer-placeholder{font-size:12px;color:var(--muted);margin:4px 0 0;font-style:italic}
+.org-scorer-checkboxes{display:flex;flex-wrap:wrap;gap:6px 14px;margin:4px 0}
+.org-scorer-check{display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer;color:var(--text)}
+.org-scorer-check input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;cursor:pointer;flex-shrink:0}
 .org-saved-info{font-size:12px;color:var(--grass);font-weight:600}
 
 /* ---- waiting approval ---- */

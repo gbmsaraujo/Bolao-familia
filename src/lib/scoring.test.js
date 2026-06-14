@@ -4,10 +4,12 @@ import {
   isNum,
   normStr,
   toScorerArray,
+  flattenScorers,
   pointsFor,
   pointsForClassified,
   pointsForBrazilGoals,
   pointsForScorer,
+  calcScorerPoints,
   gameLocked,
   prevGameFinished,
   calcStandings,
@@ -68,6 +70,68 @@ describe("toScorerArray", () => {
 });
 
 // ---------------------------------------------------------------------------
+// flattenScorers
+// ---------------------------------------------------------------------------
+describe("flattenScorers", () => {
+  it("extrai bra+opp do novo formato objeto", () =>
+    expect(flattenScorers({ bra: ["Vinícius Júnior"], opp: ["Ismael Saibari"] }))
+      .toEqual(["Vinícius Júnior", "Ismael Saibari"]));
+
+  it("ignora vazios no novo formato", () =>
+    expect(flattenScorers({ bra: ["Vinícius Júnior", ""], opp: [""] }))
+      .toEqual(["Vinícius Júnior"]));
+
+  it("converte array legado para lista plana", () =>
+    expect(flattenScorers(["Vini", "Rodrygo", ""])).toEqual(["Vini", "Rodrygo"]));
+
+  it("retorna [] para null/undefined", () =>
+    expect(flattenScorers(null)).toEqual([]));
+
+  it("retorna [] para objeto vazio", () =>
+    expect(flattenScorers({})).toEqual([]));
+});
+
+// ---------------------------------------------------------------------------
+// calcScorerPoints — pontuação por equipe (+2 Brasil, +2 adversário, máx +4)
+// ---------------------------------------------------------------------------
+describe("calcScorerPoints", () => {
+  const official = ["Vinícius Júnior", "Ismael Saibari"];
+
+  it("retorna +2 quando acerta goleador do Brasil", () =>
+    expect(calcScorerPoints({ bra: ["Vinícius Júnior"], opp: [] }, official)).toBe(2));
+
+  it("retorna +2 quando acerta goleador do adversário", () =>
+    expect(calcScorerPoints({ bra: [], opp: ["Ismael Saibari"] }, official)).toBe(2));
+
+  it("retorna +4 quando acerta goleador de ambos os times", () =>
+    expect(calcScorerPoints({ bra: ["Vinícius Júnior"], opp: ["Ismael Saibari"] }, official)).toBe(4));
+
+  it("retorna +2 mesmo com 2 picks Brasil, só um correto", () =>
+    expect(calcScorerPoints({ bra: ["Vinícius Júnior", "Rodrygo"], opp: [] }, ["Vinícius Júnior"])).toBe(2));
+
+  it("retorna +2 mesmo com 2 picks Brasil, ambos corretos (flat por equipe)", () =>
+    expect(calcScorerPoints({ bra: ["Vinícius Júnior", "Ismael Saibari"], opp: [] }, official)).toBe(2));
+
+  it("retorna 0 quando nenhum pick acerta", () =>
+    expect(calcScorerPoints({ bra: ["Fred"], opp: ["Hakimi"] }, official)).toBe(0));
+
+  it("retorna null quando não há picks", () =>
+    expect(calcScorerPoints({ bra: [], opp: [] }, official)).toBeNull());
+
+  it("retorna null quando official está vazio", () =>
+    expect(calcScorerPoints({ bra: ["Vinícius Júnior"], opp: [] }, [])).toBeNull());
+
+  it("retorna null quando scorerObj é null", () =>
+    expect(calcScorerPoints(null, official)).toBeNull());
+
+  it("suporta formato legado (array plano → trata como picks Brasil)", () =>
+    expect(calcScorerPoints(["Vinícius Júnior", "Rodrygo", ""], official)).toBe(2));
+
+  it("compara sem diferenciar acentos e maiúsculas", () =>
+    expect(calcScorerPoints({ bra: ["vinicius junior"], opp: [] }, ["Vinícius Júnior"])).toBe(2));
+});
+
+// ---------------------------------------------------------------------------
 // pointsFor — placar
 // ---------------------------------------------------------------------------
 describe("pointsFor", () => {
@@ -77,8 +141,14 @@ describe("pointsFor", () => {
   it("retorna 2 ao acertar só o resultado (vitória)", () =>
     expect(pointsFor({ h: 3, a: 1 }, { h: 2, a: 0 })).toBe(2));
 
-  it("retorna 2 ao acertar empate", () =>
-    expect(pointsFor({ h: 1, a: 1 }, { h: 2, a: 2 })).toBe(2));
+  it("retorna 0 ao acertar empate com placar diferente (não vale parcial)", () =>
+    expect(pointsFor({ h: 1, a: 1 }, { h: 2, a: 2 })).toBe(0));
+
+  it("retorna 0 ao prever 0x0 e resultado ser 1x1", () =>
+    expect(pointsFor({ h: 0, a: 0 }, { h: 1, a: 1 })).toBe(0));
+
+  it("retorna 0 ao prever vitória mas resultado ser empate", () =>
+    expect(pointsFor({ h: 2, a: 0 }, { h: 1, a: 1 })).toBe(0));
 
   it("retorna 0 ao errar o resultado", () =>
     expect(pointsFor({ h: 0, a: 1 }, { h: 2, a: 0 })).toBe(0));
@@ -145,23 +215,23 @@ describe("pointsForBrazilGoals", () => {
 describe("pointsForScorer", () => {
   const official = ["Vinícius Jr.", "Rodrygo"];
 
-  it("retorna 3 quando os 3 palpites acertam", () =>
+  it("retorna 2 quando acerta algum (todos os 3 corretos)", () =>
     expect(pointsForScorer(
       ["vinicius jr.", "rodrygo", "endrick"],
       ["Vinícius Jr.", "Rodrygo", "Endrick"]
-    )).toBe(3));
+    )).toBe(2));
 
-  it("retorna 2 quando 2 dos 3 acertam", () =>
+  it("retorna 2 quando acerta algum (2 de 3 corretos)", () =>
     expect(pointsForScorer(["Vinícius Jr.", "Rodrygo", "Endrick"], official)).toBe(2));
 
-  it("retorna 1 quando só 1 dos 3 acerta", () =>
-    expect(pointsForScorer(["Vinícius Jr.", "Richarlison", "Fred"], official)).toBe(1));
+  it("retorna 2 quando acerta algum (1 de 3 correto)", () =>
+    expect(pointsForScorer(["Vinícius Jr.", "Richarlison", "Fred"], official)).toBe(2));
 
   it("retorna 0 quando nenhum acerta", () =>
     expect(pointsForScorer(["Fred", "Richarlison", "Paquetá"], official)).toBe(0));
 
   it("compara sem diferenciar maiúsculas e acentos", () =>
-    expect(pointsForScorer(["vinicius jr."], ["Vinícius Jr."])).toBe(1));
+    expect(pointsForScorer(["vinicius jr."], ["Vinícius Jr."])).toBe(2));
 
   it("retorna null quando pred está vazio", () =>
     expect(pointsForScorer(["", "", ""], official)).toBeNull());
@@ -170,7 +240,7 @@ describe("pointsForScorer", () => {
     expect(pointsForScorer(["Vinícius Jr."], [])).toBeNull());
 
   it("aceita string legada (migração de dados antigos)", () =>
-    expect(pointsForScorer("Vinícius Jr.", ["Vinícius Jr."])).toBe(1));
+    expect(pointsForScorer("Vinícius Jr.", ["Vinícius Jr."])).toBe(2));
 });
 
 // ---------------------------------------------------------------------------
@@ -258,10 +328,10 @@ describe("pointsForClassified — valida tamanho da lista", () => {
 describe("pointsForScorer — preenchimento parcial", () => {
   const official = ["Vinícius Jr.", "Rodrygo"];
 
-  it("conta acerto com apenas 1 dos 3 preenchido", () =>
-    expect(pointsForScorer(["Vinícius Jr.", "", ""], official)).toBe(1));
+  it("retorna 2 com apenas 1 dos 3 preenchido e correto", () =>
+    expect(pointsForScorer(["Vinícius Jr.", "", ""], official)).toBe(2));
 
-  it("conta acertos com 2 dos 3 preenchidos", () =>
+  it("retorna 2 com 2 dos 3 preenchidos e corretos", () =>
     expect(pointsForScorer(["Vinícius Jr.", "Rodrygo", ""], official)).toBe(2));
 
   it("retorna 0 com 1 preenchido e errado", () =>
@@ -302,9 +372,9 @@ describe("integração — pontuação total combinada", () => {
     classified: ["BRA", "MAR"],
     brazilGoals: 5,           // erra por 1 → +1
     scorers: {
-      g1: ["Vinícius Jr.", "Rodrygo", ""],  // 2 acertos → +2
-      g2: ["Endrick", "", ""],              // 1 acerto → +1
-      g3: ["", "", ""],                     // sem palpite → null
+      g1: { bra: ["Vinícius Jr.", "Rodrygo"], opp: [] },  // bra acerta → +2 (flat por equipe)
+      g2: { bra: ["Endrick"], opp: [] },                   // bra acerta → +2
+      g3: { bra: [], opp: [] },                            // sem palpite → null
     },
   };
 
@@ -317,9 +387,9 @@ describe("integração — pontuação total combinada", () => {
   });
 
   it("pontuação de goleadores por jogo está correta", () => {
-    expect(pointsForScorer(player.scorers.g1, results.scorers.g1)).toBe(2);
-    expect(pointsForScorer(player.scorers.g2, results.scorers.g2)).toBe(1);
-    expect(pointsForScorer(player.scorers.g3, results.scorers.g3)).toBeNull();
+    expect(calcScorerPoints(player.scorers.g1, results.scorers.g1)).toBe(2); // bra hit → +2
+    expect(calcScorerPoints(player.scorers.g2, results.scorers.g2)).toBe(2); // bra hit → +2
+    expect(calcScorerPoints(player.scorers.g3, results.scorers.g3)).toBeNull();
   });
 
   it("pontuação de classificados e gols está correta", () => {
@@ -327,15 +397,15 @@ describe("integração — pontuação total combinada", () => {
     expect(pointsForBrazilGoals(player.brazilGoals, results.brazilGoals)).toBe(1);
   });
 
-  it("total de 12 pontos somando todas as categorias", () => {
+  it("total de 13 pontos somando todas as categorias", () => {
     let total = 0;
     for (const gid of gameIds) {
       total += pointsFor(player.scores[gid], results[gid]) ?? 0;
-      total += pointsForScorer(player.scorers[gid], results.scorers[gid]) ?? 0;
+      total += calcScorerPoints(player.scorers[gid], results.scorers[gid]) ?? 0;
     }
     total += pointsForClassified(player.classified, results.classified) ?? 0;
     total += pointsForBrazilGoals(player.brazilGoals, results.brazilGoals) ?? 0;
-    expect(total).toBe(12);
+    expect(total).toBe(13);
   });
 
   it("jogador sem nenhum palpite marca 0 pontos", () => {
@@ -343,7 +413,7 @@ describe("integração — pontuação total combinada", () => {
     let total = 0;
     for (const gid of gameIds) {
       total += pointsFor(empty.scores[gid], results[gid]) ?? 0;
-      total += pointsForScorer(empty.scorers[gid], results.scorers[gid]) ?? 0;
+      total += calcScorerPoints(empty.scorers[gid], results.scorers[gid]) ?? 0;
     }
     total += pointsForClassified(null, results.classified) ?? 0;
     total += pointsForBrazilGoals(empty.brazilGoals, results.brazilGoals) ?? 0;
@@ -375,28 +445,36 @@ describe("calcStandings", () => {
     },
   };
 
-  // Gabriel — esperado: 16 pts, 2 cravadas
-  // g1: +3(exato)+2(gol Vini+Rodrygo)=5 | g2: +2(resultado)+1(Endrick)=3 | g3: +3(exato)+0=3
+  // Gabriel — esperado: 17 pts, 2 cravadas
+  // g1: +3(exato)+2(bra hit)=5 | g2: +2(resultado)+2(bra hit)=4 | g3: +3(exato)+0=3
   // classified: +3 | brazilGoals: +2(exato)
-  // Total: 5+3+3+3+2 = 16
+  // Total: 5+4+3+3+2 = 17
   const gabriel = {
     id: "p_gabriel", name: "Gabriel",
     scores: { g1: { h: 2, a: 0 }, g2: { h: 3, a: 1 }, g3: { h: 1, a: 0 } },
     classified: ["BRA", "MAR"],
     brazilGoals: 7,
-    scorers: { g1: ["Vinícius Jr.", "Rodrygo", ""], g2: ["Endrick", "", ""], g3: ["", "", ""] },
+    scorers: {
+      g1: { bra: ["Vinícius Jr.", "Rodrygo"], opp: [] },
+      g2: { bra: ["Endrick"], opp: [] },
+      g3: { bra: [], opp: [] },
+    },
   };
 
-  // Bia — esperado: 7 pts, 1 cravada
-  // g1: +2(resultado)+1(Vini sem acento)=3 | g2: +3(exato)+0=3 | g3: +0+0=0
+  // Bia — esperado: 8 pts, 1 cravada
+  // g1: +2(resultado)+2(bra Vini sem acento)=4 | g2: +3(exato)+0=3 | g3: +0+0=0
   // classified: +0 (HAI errou) | brazilGoals: +1(off by 1)
-  // Total: 3+3+0+0+1 = 7
+  // Total: 4+3+0+0+1 = 8
   const bia = {
     id: "p_bia", name: "Bia",
     scores: { g1: { h: 1, a: 0 }, g2: { h: 2, a: 0 }, g3: { h: 0, a: 1 } },
     classified: ["BRA", "HAI"],
     brazilGoals: 6,
-    scorers: { g1: ["Vinicius Jr.", "", ""], g2: ["Fred", "", ""], g3: ["", "", ""] },
+    scorers: {
+      g1: { bra: ["Vinicius Jr."], opp: [] },
+      g2: { bra: ["Fred"], opp: [] },
+      g3: { bra: [], opp: [] },
+    },
   };
 
   // Tia Sônia — esperado: 6 pts, 0 cravadas
@@ -408,7 +486,11 @@ describe("calcStandings", () => {
     scores: { g1: { h: 0, a: 0 }, g2: { h: 0, a: 0 }, g3: { h: 2, a: 1 } },
     classified: ["MAR", "BRA"],
     brazilGoals: 8,
-    scorers: { g1: ["Fred", "Richarlison", ""], g2: ["", "", ""], g3: ["", "", ""] },
+    scorers: {
+      g1: { bra: ["Fred", "Richarlison"], opp: [] },
+      g2: { bra: [], opp: [] },
+      g3: { bra: [], opp: [] },
+    },
   };
 
   it("classifica na ordem correta: Gabriel → Bia → Tia Sônia", () => {
@@ -416,15 +498,15 @@ describe("calcStandings", () => {
     expect(standings.map((r) => r.name)).toEqual(["Gabriel", "Bia", "Tia Sônia"]);
   });
 
-  it("calcula pontuação total de Gabriel corretamente (16 pts)", () => {
+  it("calcula pontuação total de Gabriel corretamente (17 pts)", () => {
     const standings = calcStandings([gabriel], results, games);
-    expect(standings[0].pts).toBe(16);
+    expect(standings[0].pts).toBe(17);
     expect(standings[0].cravadas).toBe(2);
   });
 
-  it("calcula pontuação total de Bia corretamente (7 pts)", () => {
+  it("calcula pontuação total de Bia corretamente (8 pts)", () => {
     const standings = calcStandings([bia], results, games);
-    expect(standings[0].pts).toBe(7);
+    expect(standings[0].pts).toBe(8);
     expect(standings[0].cravadas).toBe(1);
   });
 
@@ -464,8 +546,33 @@ describe("calcStandings", () => {
 
   it("aceita goleador sem acento (Bia palpitou 'Vinicius Jr.' sem acento)", () => {
     const standings = calcStandings([bia], results, games);
-    // Bia acerta Vinícius Jr. sem acento em g1 → +1 pt scorer
-    const expected = 2 + 1 + 3 + 0 + 0 + 1 + 0; // g1(res+scorer) + g2(exato) + goals
+    // Bia acerta Vinícius Jr. sem acento em g1 → +2 pts scorer (flat)
+    const expected = 2 + 2 + 3 + 0 + 0 + 1 + 0; // g1(res+scorer) + g2(exato) + goals
     expect(standings[0].pts).toBe(expected);
+  });
+
+  it("acerta bra e opp em g1 → +4 de goleadores neste jogo", () => {
+    // Resultado g1 tem Vinícius Jr. (Brasil) e Rodrygo (Brasil) como oficiais
+    // Jogador previu Vinícius Jr. em bra E Rodrygo em opp → +4 (ambas equipes)
+    const resultsComOpp = {
+      ...results,
+      scorers: {
+        ...results.scorers,
+        g1: ["Vinícius Jr.", "Goleador Marrocos"],
+      },
+    };
+    const jogador = {
+      id: "p_x", name: "X",
+      scores: { g1: { h: 1, a: 1 }, g2: {}, g3: {} },
+      classified: [],
+      scorers: {
+        g1: { bra: ["Vinícius Jr."], opp: ["Goleador Marrocos"] },
+        g2: { bra: [], opp: [] },
+        g3: { bra: [], opp: [] },
+      },
+    };
+    const standings = calcStandings([jogador], resultsComOpp, games);
+    // g1: +0 (empate errado) + +4 (bra+opp ambos acertam) = 4
+    expect(standings[0].breakdown.games.g1).toBe(4);
   });
 });
