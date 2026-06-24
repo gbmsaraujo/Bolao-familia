@@ -207,6 +207,8 @@ export default function App() {
   const [approvalStatus, setApprovalStatus] = useState(null); // null | "pending" | "approved" | "rejected"
   const [tick, setTick] = useState(0);
   const [showEffect, setShowEffect] = useState(true);
+  const [brazilGoalsPrompt, setBrazilGoalsPrompt] = useState(null); // null | 'question' | 'editing'
+  const [promptGoalsValue, setPromptGoalsValue] = useState("");
   const dismissEffect = useCallback(() => setShowEffect(false), []);
 
   useEffect(() => {
@@ -219,6 +221,15 @@ export default function App() {
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, []);
+
+  useEffect(() => {
+    if (approvalStatus !== "approved" || !me || loading) return;
+    const g2 = results.g2;
+    const g2Done = g2 && isNum(g2.h) && isNum(g2.a);
+    const g3NotStarted = Date.now() < new Date(GAMES[2].kickoff).getTime();
+    const notAsked = !localStorage.getItem(`brazil-goals-prompt-${me.id}`);
+    if (g2Done && g3NotStarted && notAsked) setBrazilGoalsPrompt('question');
+  }, [approvalStatus, me, results, loading]);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -240,6 +251,15 @@ export default function App() {
     setLoading(false);
     return { ps, res };
   }, []);
+
+  const saveBrazilGoalsOverride = async (val) => {
+    if (!me || !isNum(val)) return;
+    const existing = players.find((p) => p.id === me.id) || {};
+    const record = { ...existing, id: me.id, name: me.name, brazilGoals: +val, updatedAt: Date.now() };
+    await store.set(`pred:${me.id}`, JSON.stringify(record));
+    setMyBrazilGoals(String(+val));
+    await loadAll();
+  };
 
   const toScorerObj = (v) => {
     if (v && typeof v === "object" && !Array.isArray(v)) return v;
@@ -632,6 +652,61 @@ export default function App() {
               onReject={rejectUser}
               onDelete={deleteUser}
             />
+          )}
+
+          {brazilGoalsPrompt && (
+            <div className="modal-overlay">
+              <div className="modal-card">
+                <div className="modal-title">⚽ Último jogo!</div>
+                {brazilGoalsPrompt === "question" ? (
+                  <>
+                    <p className="modal-body">Deseja alterar o total de gols do Brasil antes do último jogo?</p>
+                    <p className="modal-hint">
+                      Atual: <strong>{myBrazilGoals !== "" ? myBrazilGoals + " gols" : "não preenchido"}</strong>
+                    </p>
+                    <div className="modal-actions">
+                      <button className="modal-btn yes" onClick={() => { setPromptGoalsValue(String(myBrazilGoals)); setBrazilGoalsPrompt("editing"); }}>
+                        Sim, quero alterar
+                      </button>
+                      <button className="modal-btn no" onClick={() => { localStorage.setItem(`brazil-goals-prompt-${me.id}`, "1"); setBrazilGoalsPrompt(null); }}>
+                        Não, manter
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="modal-body">Quantos gols o Brasil vai marcar nos 3 jogos?</p>
+                    <div className="modal-input-row">
+                      <input
+                        inputMode="numeric"
+                        className="score-in"
+                        value={promptGoalsValue}
+                        onChange={(e) => setPromptGoalsValue(e.target.value.replace(/[^0-9]/g, "").slice(0, 2))}
+                        autoFocus
+                      />
+                      <span className="goals-label">gols</span>
+                    </div>
+                    <div className="modal-actions">
+                      <button
+                        className="modal-btn yes"
+                        disabled={!isNum(promptGoalsValue) || promptGoalsValue === ""}
+                        onClick={async () => {
+                          await saveBrazilGoalsOverride(promptGoalsValue);
+                          localStorage.setItem(`brazil-goals-prompt-${me.id}`, "1");
+                          setBrazilGoalsPrompt(null);
+                          flash("Total de gols atualizado!");
+                        }}
+                      >
+                        Salvar
+                      </button>
+                      <button className="modal-btn no" onClick={() => setBrazilGoalsPrompt("question")}>
+                        Voltar
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
           )}
         </div>
       ) : (
@@ -2043,6 +2118,27 @@ const CSS = `
   .score-in{width:42px}
   .team-chip{font-size:12px;padding:7px 10px}
 }
+
+/* ---- brazil goals prompt modal ---- */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.72);display:flex;
+  align-items:center;justify-content:center;z-index:200;padding:20px}
+.modal-card{background:var(--pitch);border:1px solid var(--line);border-radius:18px;
+  padding:26px 20px;max-width:340px;width:100%;display:flex;flex-direction:column;gap:14px;
+  box-shadow:0 24px 60px rgba(0,0,0,.65)}
+.modal-title{font-family:'Anton',sans-serif;font-size:22px;color:var(--canary);text-align:center;
+  letter-spacing:.03em}
+.modal-body{font-size:15px;font-weight:600;color:var(--text);text-align:center;line-height:1.45;margin:0}
+.modal-hint{font-size:13px;color:var(--muted);text-align:center;margin:0}
+.modal-hint strong{color:var(--canary)}
+.modal-input-row{display:flex;align-items:center;gap:10px;justify-content:center;padding:6px 0}
+.modal-actions{display:flex;flex-direction:column;gap:8px}
+.modal-btn{border:none;border-radius:10px;font-size:14px;font-weight:700;padding:14px;
+  cursor:pointer;transition:opacity .15s;width:100%}
+.modal-btn.yes{background:var(--canary);color:#1a1300}
+.modal-btn.yes:hover:not(:disabled){opacity:.88}
+.modal-btn.yes:disabled{opacity:.35;cursor:not-allowed}
+.modal-btn.no{background:transparent;color:var(--muted);border:1px solid var(--line2)}
+.modal-btn.no:hover{color:var(--text);border-color:var(--muted)}
 
 /* ---- football opening effect ---- */
 .football-overlay{position:fixed;inset:0;pointer-events:none;z-index:9998;overflow:hidden}
