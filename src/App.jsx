@@ -158,25 +158,11 @@ const prevGameFinishedLocal = (gameIndex, results) =>
 const G1_KICKOFF = new Date(GAMES[0].kickoff).getTime();
 const preLockExpired = () => Date.now() >= G1_KICKOFF;
 
-function playWhistle() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(2600, ctx.currentTime);
-    osc.frequency.linearRampToValueAtTime(3400, ctx.currentTime + 0.12);
-    osc.frequency.linearRampToValueAtTime(3000, ctx.currentTime + 0.55);
-    gain.gain.setValueAtTime(0, ctx.currentTime);
-    gain.gain.linearRampToValueAtTime(0.28, ctx.currentTime + 0.05);
-    gain.gain.linearRampToValueAtTime(0.28, ctx.currentTime + 0.45);
-    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.65);
-    osc.start(ctx.currentTime);
-    osc.stop(ctx.currentTime + 0.7);
-  } catch (_) {}
+function playSound(src) {
+  try { new Audio(src).play().catch(() => {}); } catch (_) {}
 }
+const playWhistle = () => playSound("/apito.mp3");
+const playAcabou  = () => playSound("/acabou.mp3");
 
 function FootballEffect({ onDone }) {
   const balls = useMemo(() =>
@@ -595,7 +581,7 @@ export default function App() {
             </button>
             <button
               className={tab === "tabela" ? "tab on" : "tab"}
-              onClick={() => { loadAll(); setTab("tabela"); }}
+              onClick={() => { loadAll(); setTab("tabela"); if (GAMES.some(g => { const r = results[g.id]; return r && isNum(r.h) && isNum(r.a); })) playAcabou(); }}
             >
               <Trophy size={16} /> Classificação
             </button>
