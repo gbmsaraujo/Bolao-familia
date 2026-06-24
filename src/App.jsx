@@ -158,6 +158,57 @@ const prevGameFinishedLocal = (gameIndex, results) =>
 const G1_KICKOFF = new Date(GAMES[0].kickoff).getTime();
 const preLockExpired = () => Date.now() >= G1_KICKOFF;
 
+function playWhistle() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(2600, ctx.currentTime);
+    osc.frequency.linearRampToValueAtTime(3400, ctx.currentTime + 0.12);
+    osc.frequency.linearRampToValueAtTime(3000, ctx.currentTime + 0.55);
+    gain.gain.setValueAtTime(0, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.28, ctx.currentTime + 0.05);
+    gain.gain.linearRampToValueAtTime(0.28, ctx.currentTime + 0.45);
+    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.65);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.7);
+  } catch (_) {}
+}
+
+function FootballEffect({ onDone }) {
+  const balls = useMemo(() =>
+    Array.from({ length: 16 }, (_, i) => ({
+      id: i,
+      left: `${4 + Math.random() * 92}%`,
+      size: `${20 + Math.random() * 22}px`,
+      delay: `${(Math.random() * 0.7).toFixed(2)}s`,
+      dur: `${(2.2 + Math.random() * 1.4).toFixed(2)}s`,
+    })), []);
+
+  useEffect(() => {
+    playWhistle();
+    const t = setTimeout(onDone, 3800);
+    return () => clearTimeout(t);
+  }, [onDone]);
+
+  return (
+    <div className="football-overlay" aria-hidden="true">
+      {balls.map((b) => (
+        <span
+          key={b.id}
+          className="football-ball"
+          style={{ left: b.left, fontSize: b.size, animationDelay: b.delay, animationDuration: b.dur }}
+        >
+          ⚽
+        </span>
+      ))}
+    </div>
+  );
+}
+
 /* ============================== APP ============================== */
 export default function App() {
   const [me, setMe] = useState(null);
@@ -175,6 +226,7 @@ export default function App() {
   const [orgUnlocked, setOrgUnlocked] = useState(false);
   const [approvalStatus, setApprovalStatus] = useState(null); // null | "pending" | "approved" | "rejected"
   const [tick, setTick] = useState(0);
+  const [showEffect, setShowEffect] = useState(true);
 
   useEffect(() => {
     const t = setInterval(() => setTick((x) => x + 1), 30000);
@@ -519,6 +571,7 @@ export default function App() {
   return (
     <div className="bolao-root">
       <style>{CSS}</style>
+      {showEffect && <FootballEffect onDone={() => setShowEffect(false)} />}
 
       {!me ? (
         <Gate
@@ -2008,5 +2061,15 @@ const CSS = `
   .team{min-width:54px}
   .score-in{width:42px}
   .team-chip{font-size:12px;padding:7px 10px}
+}
+
+/* ---- football opening effect ---- */
+.football-overlay{position:fixed;inset:0;pointer-events:none;z-index:9998;overflow:hidden}
+.football-ball{position:absolute;bottom:-60px;line-height:1;user-select:none;
+  animation-name:ballFloat;animation-timing-function:ease-out;animation-fill-mode:forwards}
+@keyframes ballFloat{
+  0%{transform:translateY(0) rotate(0deg) scale(1);opacity:.95}
+  70%{opacity:.75}
+  100%{transform:translateY(-110vh) rotate(600deg) scale(.55);opacity:0}
 }
 `;
