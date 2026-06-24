@@ -158,11 +158,6 @@ const prevGameFinishedLocal = (gameIndex, results) =>
 const G1_KICKOFF = new Date(GAMES[0].kickoff).getTime();
 const preLockExpired = () => Date.now() >= G1_KICKOFF;
 
-function playSound(src) {
-  try { new Audio(src).play().catch(() => {}); } catch (_) {}
-}
-const playWhistle = () => playSound("/apito.mp3");
-const playAcabou  = () => playSound("/acabou.mp3");
 
 function FootballEffect({ onDone }) {
   const balls = useMemo(() =>
@@ -175,7 +170,6 @@ function FootballEffect({ onDone }) {
     })), []);
 
   useEffect(() => {
-    playWhistle();
     const t = setTimeout(onDone, 3800);
     return () => clearTimeout(t);
   }, [onDone]);
@@ -582,7 +576,7 @@ export default function App() {
             </button>
             <button
               className={tab === "tabela" ? "tab on" : "tab"}
-              onClick={() => { loadAll(); setTab("tabela"); if (GAMES.some(g => { const r = results[g.id]; return r && isNum(r.h) && isNum(r.a); })) playAcabou(); }}
+              onClick={() => { loadAll(); setTab("tabela"); }}
             >
               <Trophy size={16} /> Classificação
             </button>
