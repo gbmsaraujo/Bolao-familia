@@ -181,6 +181,12 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
+  useEffect(() => {
+    const onVisible = () => { if (!document.hidden) setTick((x) => x + 1); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     const { keys } = await store.list("pred:");
