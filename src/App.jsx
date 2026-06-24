@@ -213,6 +213,7 @@ export default function App() {
   const [approvalStatus, setApprovalStatus] = useState(null); // null | "pending" | "approved" | "rejected"
   const [tick, setTick] = useState(0);
   const [showEffect, setShowEffect] = useState(true);
+  const dismissEffect = useCallback(() => setShowEffect(false), []);
 
   useEffect(() => {
     const t = setInterval(() => setTick((x) => x + 1), 30000);
@@ -557,7 +558,7 @@ export default function App() {
   return (
     <div className="bolao-root">
       <style>{CSS}</style>
-      {showEffect && <FootballEffect onDone={() => setShowEffect(false)} />}
+      {showEffect && <FootballEffect onDone={dismissEffect} />}
 
       {!me ? (
         <Gate
